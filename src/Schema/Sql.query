@@ -1,0 +1,163 @@
+( RAW MATERIAL STOCK )
+ 
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA extensions;
+
+CREATE OR REPLACE FUNCTION public.update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = TIMEZONE('utc'::text, NOW());
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TABLE IF NOT EXISTS public.raw_material_stock (
+    id uuid NOT NULL DEFAULT extensions.uuid_generate_v4(),
+    category text NULL,
+    material text NOT NULL,
+    opening_stock numeric(15, 3) NULL DEFAULT 0.000,
+    inward numeric(15, 3) NULL DEFAULT 0.000,
+    consumption numeric(15, 3) NULL DEFAULT 0.000,
+    crushing text NULL DEFAULT '0%'::text,
+    fines3 numeric(15, 3) NULL DEFAULT 0.000,
+    fines3_qty numeric(15, 3) NULL DEFAULT 0.000,
+    production numeric(15, 3) NULL DEFAULT 0.000,
+    dispatch numeric(15, 3) NULL DEFAULT 0.000,
+    closing_stock numeric(15, 3) NULL DEFAULT 0.000,
+    unit text NULL,
+    remarks text NULL,
+    attachments jsonb NULL DEFAULT '[]'::jsonb,
+    report_date date NOT NULL,
+    created_at timestamp with time zone NOT NULL DEFAULT timezone('utc'::text, now()),
+    updated_at timestamp with time zone NOT NULL DEFAULT timezone('utc'::text, now()),
+    CONSTRAINT raw_material_stock_pkey PRIMARY KEY (id)
+) TABLESPACE pg_default;
+
+
+CREATE INDEX IF NOT EXISTS idx_raw_material_stock_report_date 
+ON public.raw_material_stock USING btree (report_date) TABLESPACE pg_default;
+
+CREATE INDEX IF NOT EXISTS idx_raw_material_stock_material 
+ON public.raw_material_stock USING btree (material) TABLESPACE pg_default;
+
+DROP TRIGGER IF EXISTS set_timestamp_raw_material_stock ON public.raw_material_stock;
+
+CREATE TRIGGER set_timestamp_raw_material_stock 
+    BEFORE UPDATE ON public.raw_material_stock 
+    FOR EACH ROW
+    EXECUTE FUNCTION public.update_updated_at_column();
+
+
+( COAL DETAIL )
+
+
+create table public.coal_stock (
+  id uuid not null default extensions.uuid_generate_v4 (),
+  created_at timestamp with time zone not null default timezone ('utc'::text, now()),
+  updated_at timestamp with time zone not null default timezone ('utc'::text, now()),
+  category text null default 'COAL DETAILS'::text,
+  material text not null,
+  opening_stock numeric(15, 3) null default 0.000,
+  inward numeric(15, 3) null default 0.000,
+  consumption numeric(15, 3) null default 0.000,
+  fc text null,
+  moist_loss_pct text null,
+  moist_loss_qty numeric(15, 3) null default 0.000,
+  landed_cost numeric(15, 3) null default 0.000,
+  dispatch numeric(15, 3) null default 0.000,
+  closing_stock numeric(15, 3) null default 0.000,
+  remarks text null,
+  report_date date null,
+  constraint coal_stock_pkey primary key (id)
+) TABLESPACE pg_default;
+
+
+( INCOMMING AND OUTGOIING )
+
+create table public.item_transfers (
+  id uuid not null default extensions.uuid_generate_v4 (),
+  created_at timestamp with time zone null default now(),
+  report_date date not null,
+  entry_type text not null,
+  party_name text not null,
+  material_name text not null,
+  vehicle_no text null,
+  qty numeric(15, 3) null default 0,
+  rate numeric(15, 2) null default 0,
+  constraint item_transfers_pkey primary key (id),
+  constraint item_transfers_entry_type_check check (
+    (
+      entry_type = any (array['incoming'::text, 'outgoing'::text])
+    )
+  )
+) TABLESPACE pg_default;
+
+
+( PRODUCTION )
+
+CREATE TABLE public.production2 (
+  id uuid NOT NULL DEFAULT extensions.uuid_generate_v4(),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  report_date date NOT NULL,
+  source_file text NOT NULL DEFAULT 'Manual Entry',
+  item_grade text NOT NULL,
+  percent numeric(5,2) NULL DEFAULT 0,
+  kiln1 numeric(15,3) NOT NULL DEFAULT 0,
+  kiln2 numeric(15,3) NOT NULL DEFAULT 0,
+  total numeric(15,3) NOT NULL DEFAULT 0,
+  CONSTRAINT production2_pkey PRIMARY KEY (id)
+  );
+
+
+
+
+(Sauda Sale )
+
+create table public.sauda_sale (
+  id uuid not null default extensions.uuid_generate_v4 (),
+  created_at timestamp with time zone null default now(),
+  date date not null,
+  main_heading text null,
+  item_name text not null,
+  size_mm text null,
+  party_name text not null,
+  consignee_name text null,
+  sauda_quantity numeric(15, 3) null default 0,
+  rate_amt numeric(15, 2) null default 0,
+  prv_pending numeric(15, 3) null default 0,
+  qty_dispatch numeric(15, 3) null default 0,
+  bal_pending numeric(15, 3) null default 0,
+  broker text null,
+  delivery_terms text null,
+  payment_condition text null,
+  reference_name text null,
+  remarks text null,
+  constraint sauda_sale_pkey primary key (id)
+) TABLESPACE pg_default;
+
+
+
+( SAUDA PURCHASE )
+
+create table public.sauda_purchase (
+  id uuid not null default extensions.uuid_generate_v4 (),
+  created_at timestamp with time zone null default now(),
+  date date not null,
+  main_heading text null,
+  item_name text not null,
+  size_mm text null,
+  party_name text not null,
+  order_quantity numeric(15, 3) null default 0,
+  rate_mt numeric(15, 2) null default 0,
+  qty_received numeric(15, 3) null default 0,
+  bal_pending numeric(15, 3) null default 0,
+  broker text null,
+  delivery_terms text null,
+  payment_condition text null,
+  reference_name text null,
+  remarks text null,
+  constraint sauda_purchase_pkey primary key (id)
+) TABLESPACE pg_default;
+
+
+
+

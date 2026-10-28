@@ -1,0 +1,115 @@
+# OCR System Complete Documentation
+
+## 1. Core Objective & User Need
+**The Core Need:** 
+"Mai ek image (photo ya scanned document) upload karu, aur system automatically uss image ko analyze karke zaroori parameters ka data extract kar le aur forms mein bhaar de."
+
+**Purpose of the System:**
+The application needs to eliminate manual data entry. Operators in the plant have physical slips (like Weighbridge receipts, Coal Lab test results, and Production sheets). By uploading a photo or using the camera, the system must:
+1. **Read** all text from the image using an OCR engine.
+2. **Analyze** the raw text to find specific business parameters (e.g., Gross Weight, Party Name, Kiln 1 Production).
+3. **Extract** the exact data points and map them to the corresponding input fields on the screen.
+
+---
+
+## 2. End-to-End Workflow
+
+1. **Trigger (Image Input):**
+   - The user clicks on the **"Extract Text from Image (OCR)"** button available on the page.
+   - A modal opens where the user can either **Drag & Drop** an image file, **Browse** their computer, or **Use the Device Camera** to take a live photo of the slip.
+2. **Processing (Text Extraction):**
+   - The `OCRImageUploader` component receives the image.
+   - It converts the image to a data URL and sends it to OpenAI using the OpenAI JavaScript SDK.
+   - The `gpt-4o-mini` vision model returns the recognized text. The browser displays an indeterminate processing state while the request is running.
+   - The frontend reads its API key from `VITE_OPENAI_API_KEY`. Vite embeds `VITE_` values into the client bundle, so this browser-only setup exposes the key to site users and is suitable only for controlled testing. Use a secured backend for production.
+3. **Analysis & Logic (Parameter Mapping):**
+   - The raw text is passed to a specialized parsing function in `ocrParsers.js`.
+   - The parser function applies **Regex (Regular Expressions)** and **Keyword Matching** tailored specifically to the parameters of that page.
+   - It searches for anchors (like "GROSS:", "NET WEIGHT", "VEHICLE NO") and extracts the values adjacent to them.
+4. **Data Population (Output):**
+   - The parser returns a cleanly structured JSON object.
+   - The React page receives this object and instantly updates its form state (e.g., `setForm(...)`).
+   - The user immediately sees the extracted data populated in the text boxes, ready to be reviewed and saved to the database.
+
+---
+
+## 3. Page-Wise Detailed Parameters & Extraction Logic
+
+Each module has a different physical slip format. Here is the detailed logic on how the parameters are analyzed and extracted for each specific page.
+
+### 3.1. Sauda Sale (`SaudaSale.jsx`)
+**Target Document:** Weighbridge Slips (Dharam Kanta Parchi)
+- **Parameters to Extract:**
+  - `partyName`: The name of the buyer/seller.
+  - `truckNo`: The vehicle's registration number.
+  - `material`: The type of material loaded.
+  - `grossWeight`: Total weight (Truck + Material).
+  - `tareWeight`: Empty truck weight.
+  - `netWeight`: Actual material weight.
+- **Analysis Logic:** 
+  - **Keywords:** The system scans for words like "Gross", "Tare", "Net", "Vehicle", "Truck No".
+  - **Fallback Logic:** If exact keywords are missing due to poor image quality, the system looks for the **first three large numerical values** and logically assigns the largest to Gross, the smallest to Tare, and the middle one to Net. Vehicle numbers are detected using standard Indian RTO formats (e.g., `CG-04-XX-1234`).
+
+### 3.2. Sauda Purchase (`SaudaPurchase.jsx`)
+**Target Document:** Purchase Receipts / Invoices
+- **Parameters to Extract:**
+  - `mainHeading`: Category of purchase.
+  - `itemName`: Specific item name.
+  - `receivedWeight`: Quantity of material received.
+  - `balPending`: Remaining balance quantity.
+- **Analysis Logic:**
+  - **Keywords:** Scans for "Received", "Pending", "Bal". 
+  - It extracts the numerical values that immediately follow these keywords to ensure high accuracy.
+
+### 3.3. Item Transfer (`ItemTransfer.jsx`)
+**Target Document:** Internal Transfer/Gate Pass Slips
+- **Parameters to Extract:**
+  - `partyName`: Source or Destination party.
+  - `materialName`: Material being transferred.
+  - `vehicleNo`: Transport vehicle.
+  - `qty`: Quantity transferred.
+  - `rate`: Rate/Price per unit.
+- **Analysis Logic:**
+  - Scans for standard terms like "Qty", "Quantity", "Rate", "Rs".
+  - Identifies the vehicle number using regex. The first recognizable word block that doesn't match a standard label is assumed to be the Party Name.
+
+### 3.4. Raw Material Stock (`Stock.jsx` - Tab 1)
+**Target Document:** Daily Inventory Log Sheets
+- **Parameters to Extract:**
+  - `material`, `openingStock`, `inward`, `consumption`, `crushing`, `fines3`, `fines3Qty`, `production`, `dispatch`, `closingStock`.
+- **Analysis Logic:**
+  - Log sheets are usually tabular. The system splits the text into lines.
+  - It looks for sequential numbers on a single line. 
+  - E.g., if it reads "IRON ORE 1500 200 500", it maps Material = IRON ORE, Opening = 1500, Inward = 200, Consumption = 500. 
+  - It also detects `%` signs to accurately place values in the `crushing` and `fines3` fields.
+
+### 3.5. Coal Detail Stock (`Stock.jsx` - Tab 2)
+**Target Document:** Coal Inventory & Lab Test Reports
+- **Parameters to Extract:**
+  - `material`, `openingStock`, `inward`, `consumption`, `fc` (Fixed Carbon), `moistLossPct` (Moisture), `dispatch`, `landedCost`, `closingStock`.
+- **Analysis Logic:**
+  - Specialized keywords: "F/C", "Fixed Carbon", "Moist", "Moisture", "Cost".
+  - It extracts the percentages for Moisture and strings for F/C, ensuring lab data is accurately captured alongside the stock tonnages.
+
+### 3.6. Production Daily Logs (`Production.jsx` & `Production2.jsx`)
+**Target Document:** Sponge Iron Production Daily Reports
+- **Parameters to Extract:**
+  - `metricName` (e.g., '"A" GRADE', 'DOLO CHAR').
+  - `percentValue` (Grade percentage).
+  - `k1Value` (Kiln 1 Output).
+  - `k2Value` (Kiln 2 Output).
+  - `totalValue` (Total Output).
+  - `downTimeRemarks` (Text notes regarding plant stoppages).
+- **Analysis Logic:**
+  - Scans line by line. If a line contains "GRADE", "SPONGE", or "DUST", it extracts the numbers at the end of that line.
+  - Assigns the first number to Kiln 1, second to Kiln 2, and the third (or the sum) to Total.
+  - Specifically searches for the phrase "REMARKS :" at the bottom of the page and captures all text following it to populate the Down Time Remarks box.
+
+---
+
+## 4. Summary of Benefits
+By implementing this tailored logic:
+- The operator only needs to click a picture.
+- The system intelligentally **understands the context** (whether it's a weighbridge slip or a lab report).
+- It extracts **only the relevant data** and ignores background noise.
+- This results in a seamless, automated data-entry experience across all modules.
