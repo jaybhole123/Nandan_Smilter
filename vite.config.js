@@ -12,9 +12,8 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks: {
-          vendor: ['react', 'react-dom', 'react-router-dom'],
-          pdf: ['jspdf', 'html2canvas'],
-          icons: ['lucide-react']
+          vendor: ['react', 'react-dom', 'react-router-dom', 'zustand'],
+          pdf: ['jspdf', 'html2canvas']
         }
       }
     }
