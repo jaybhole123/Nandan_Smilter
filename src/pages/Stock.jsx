@@ -3,7 +3,7 @@ import { useStockStore } from '../store/useStore'
 import { FileUploader } from '../components/FileUploader'
 import { CsvDropzone } from '../components/CsvDropzone'
 import OCRImageUploader from '../components/OCRImageUploader'
-import { parseStockOCR, parseCoalStockOCR } from '../utils/ocrParsers'
+import { clean } from '../utils/aiOcr'
 import { localDb } from '../services/localDb'
 import DateFilter from '../components/DateFilter'
 
@@ -58,6 +58,17 @@ const formatPercentValue = (value) => {
 const getCategoryLabel = (category) => {
   const found = categoryOptions.find(opt => opt.value === category)
   return found ? found.label : category
+}
+
+// Maps a sheet group heading to the category value this page stores ('' = RAW IRON ORE)
+const categoryFromHeading = (heading, fallback) => {
+  const h = clean(heading)
+  if (!h) return fallback
+  if (/pellet/i.test(h)) return 'rawPelletOre'
+  if (/processed/i.test(h)) return 'processedIronOre'
+  if (/fines/i.test(h)) return 'ironFines'
+  if (/irons*ore/i.test(h)) return ''
+  return h
 }
 
 const Stock = () => {
@@ -438,43 +449,69 @@ const Stock = () => {
   }
 
   // --- OCR Upload Handlers ---
-  const handleRawMaterialOcr = (extractedText) => {
-    const parsedData = parseStockOCR(extractedText)
-    if (parsedData.length === 0) {
+  // The sheet's date ("AS ON DATE" when printed) becomes the report date the rows are saved under
+  const applyAiReportDate = (data) => {
+    if (/^d{4}-d{2}-d{2}$/.test(clean(data.reportDate))) setReportDate(clean(data.reportDate))
+  }
+
+  const handleRawMaterialAi = (data) => {
+    const newRows = (data.rows || [])
+      .filter((row) => clean(row.material))
+      .map((row) => ({
+        ...initialForm,
+        category: categoryFromHeading(row.category, rowsCategory || ''),
+        material: clean(row.material),
+        openingStock: clean(row.openingStock) || '0',
+        inward: clean(row.inward) || '0',
+        consumption: clean(row.consumption) || '0',
+        crushing: clean(row.crushing) || '0%',
+        fines3: clean(row.fines3) || '0%',
+        fines3Qty: clean(row.fines3Qty) || '0',
+        production: clean(row.production) || '0',
+        dispatch: clean(row.dispatch) || '0',
+        closingStock: clean(row.closingStock) || '0',
+      }))
+
+    if (newRows.length === 0) {
       setToast({ type: 'error', message: 'No raw material rows could be read from the image.' })
       return
     }
 
-    const newRows = parsedData.map((row) => ({
-      ...initialForm,
-      ...row,
-      category: rowsCategory || row.category || ''
-    }))
-
+    applyAiReportDate(data)
     setRows(newRows)
     setActiveTab('raw_material')
     setIsModalOpen(true)
-    setToast({ type: 'success', message: `OCR extracted ${newRows.length} raw material rows. Review and save them.` })
+    setToast({ type: 'success', message: `Read ${newRows.length} raw material rows from the image. Review and save them.` })
   }
 
-  const handleCoalOcr = (extractedText) => {
-    const parsedData = parseCoalStockOCR(extractedText)
-    if (parsedData.length === 0) {
+  const handleCoalAi = (data) => {
+    const newRows = (data.rows || [])
+      .filter((row) => clean(row.material))
+      .map((row) => ({
+        category: coalCategory || 'COAL DETAILS',
+        material: clean(row.material),
+        openingStock: clean(row.openingStock) || '0',
+        inward: clean(row.inward) || '0',
+        consumption: clean(row.consumption) || '0',
+        fc: clean(row.fc) || '-',
+        moistLossPct: clean(row.moistLossPct) || '0%',
+        landedCost: clean(row.landedCost) || '0',
+        dispatch: clean(row.dispatch) || '0',
+        closingStock: clean(row.closingStock) || '0',
+        remarks: '',
+      }))
+
+    if (newRows.length === 0) {
       setToast({ type: 'error', message: 'No coal rows could be read from the image.' })
       return
     }
 
-    const newRows = parsedData.map((row) => ({
-      ...row,
-      category: coalCategory || 'COAL DETAILS',
-      remarks: ''
-    }))
-
+    applyAiReportDate(data)
     setSelectedId(null)
     setCoalRows(newRows)
     setActiveTab('coal_detail')
     setIsModalOpen(true)
-    setToast({ type: 'success', message: `OCR extracted ${newRows.length} coal rows. Review and save them.` })
+    setToast({ type: 'success', message: `Read ${newRows.length} coal rows from the image. Review and save them.` })
   }
 
   const addCoalRow = () => setCoalRows((s) => ([...s, { material: '', openingStock: '', inward: '', consumption: '', fc: '', moistLossPct: '', dispatch: '', landedCost: '', closingStock: '' }]))
@@ -742,7 +779,8 @@ const Stock = () => {
 
           {/* Front Image Upload / OCR Button */}
           <OCRImageUploader 
-            onTextExtracted={activeTab === 'raw_material' ? handleRawMaterialOcr : handleCoalOcr}
+            aiPage={activeTab === 'raw_material' ? 'stock_raw' : 'stock_coal'}
+            onAiResult={activeTab === 'raw_material' ? handleRawMaterialAi : handleCoalAi}
             buttonLabel={activeTab === 'raw_material' ? 'Scan Raw Material' : 'Scan Coal Detail'}
             className="px-4 py-2 bg-purple-50 text-purple-700 hover:bg-purple-100 border border-purple-200 font-semibold rounded-lg shadow-sm transition-all flex items-center gap-2 h-10 active:Sale-95"
           />
@@ -1078,7 +1116,8 @@ const Stock = () => {
             </CsvDropzone>
 
             <OCRImageUploader 
-              onTextExtracted={handleRawMaterialOcr} 
+              aiPage="stock_raw"
+              onAiResult={handleRawMaterialAi} 
               className="px-5 py-2.5 bg-purple-50 text-purple-700 border border-purple-200 hover:bg-purple-100 hover:border-purple-300 shadow-sm font-medium rounded-md flex items-center gap-1 active:Sale-95" 
             />
             
@@ -1206,7 +1245,8 @@ const Stock = () => {
                   </CsvDropzone>
 
                   <OCRImageUploader 
-                    onTextExtracted={handleCoalOcr} 
+                    aiPage="stock_coal"
+                    onAiResult={handleCoalAi} 
                     className="px-5 py-2.5 bg-purple-50 text-purple-700 border border-purple-200 hover:bg-purple-100 hover:border-purple-300 shadow-sm font-medium rounded-md flex items-center gap-1 active:Sale-95" 
                   />
                 </>

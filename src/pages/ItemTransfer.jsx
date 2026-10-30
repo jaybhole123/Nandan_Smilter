@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { localDb } from '../services/localDb'
 import { CsvDropzone } from '../components/CsvDropzone'
 import OCRImageUploader from '../components/OCRImageUploader'
-import { parseItemTransferOCR } from '../utils/ocrParsers'
+import { clean } from '../utils/aiOcr'
 import DateFilter from '../components/DateFilter'
 
 const initialUnifiedForm = {
@@ -286,18 +286,24 @@ const ItemTransfer = () => {
   }
 
   // --- OCR Upload Handler ---
-  const handleOcrUpload = (extractedText) => {
-    const parsedData = parseItemTransferOCR(extractedText)
-    const newRows = parsedData.map((row, index) => ({
-      ...row,
-      id: `${row.type}-${row.serialNo || index}-${Date.now()}`,
-      mainHeading: '',
-      vehicleNo: row.vehicleNo || '',
-      qty: row.qty || '',
-      rate: row.rate || ''
-    }))
-    const incomingRows = newRows.filter(row => row.type === 'incoming')
-    const outgoingRows = newRows.filter(row => row.type === 'outgoing')
+  // The slip's own heading (INCOMING / OUTGOING) decides the section; rows without one go to incoming
+  const handleAiResult = (data) => {
+    const incomingRows = []
+    const outgoingRows = []
+    ;(data.rows || []).forEach((r, index) => {
+      if (!clean(r.partyName) && !clean(r.materialName)) return // totals / empty lines
+      const entry = {
+        id: `ai-${Date.now()}-${index}`,
+        mainHeading: '',
+        partyName: clean(r.partyName),
+        materialName: clean(r.materialName),
+        vehicleNo: clean(r.vehicleNo),
+        qty: clean(r.qty) || '0',
+        rate: clean(r.rate) || '0',
+      }
+      if (clean(r.entryType).toLowerCase() === 'outgoing') outgoingRows.push({ ...entry, type: 'outgoing' })
+      else incomingRows.push({ ...entry, type: 'incoming' })
+    })
 
     if (incomingRows.length === 0 && outgoingRows.length === 0) {
       showToast('No transfer rows could be read from the image.', 'error')
@@ -306,7 +312,7 @@ const ItemTransfer = () => {
 
     setIncomingCsvPreview(incomingRows)
     setOutgoingCsvPreview(outgoingRows)
-    showToast(`OCR extracted ${newRows.length} transfer rows. Review and save each section.`)
+    showToast(`Read ${incomingRows.length + outgoingRows.length} transfer rows from the image. Review and save each section.`)
   }
 
   // --- Render Table (Reusable) ---
@@ -406,7 +412,8 @@ const ItemTransfer = () => {
           </button>
           
           <OCRImageUploader 
-            onTextExtracted={handleOcrUpload} 
+            aiPage="transfer"
+            onAiResult={handleAiResult} 
             className="px-4 h-10 bg-purple-50 text-purple-600 border border-purple-200 hover:bg-purple-100 hover:border-purple-300 font-bold rounded-lg" 
           />
 

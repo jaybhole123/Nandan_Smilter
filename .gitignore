@@ -22,3 +22,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# local secrets (OPENAI_API_KEY goes in .env.local)
+.env.local
+tools/ocr-test/out

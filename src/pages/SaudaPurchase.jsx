@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react'
 import { localDb } from '../services/localDb'
 import { CsvDropzone } from '../components/CsvDropzone'
 import OCRImageUploader from '../components/OCRImageUploader'
-import { parseSaudaPurchaseOCR } from '../utils/ocrParsers'
+import { clean } from '../utils/aiOcr'
 import DateFilter from '../components/DateFilter'
 
 const initialForm = {
@@ -248,34 +248,34 @@ const SaudaPurchase = () => {
   }
 
   // --- OCR Upload Handler ---
-  const handleOcrUpload = (extractedText) => {
-    const parsedData = parseSaudaPurchaseOCR(extractedText)
+  const handleAiResult = (data) => {
+    const previewRows = (data.rows || [])
+      .filter((row) => clean(row.partyName))
+      .map((row, index) => ({
+        id: `ai-${Date.now()}-${index}`,
+        date: parseDateToDB(clean(row.date)),
+        mainHeading: clean(row.mainHeading),
+        itemName: clean(row.itemName) || clean(row.mainHeading),
+        sizeMm: clean(row.sizeMm),
+        partyName: clean(row.partyName),
+        orderQuantity: clean(row.orderQuantity) || '0',
+        rateMt: clean(row.rateMt) || '0',
+        qtyReceived: clean(row.qtyReceived) || '0',
+        balPending: clean(row.balPending) || '0',
+        broker: clean(row.broker),
+        deliveryTerms: clean(row.deliveryTerms),
+        paymentCondition: clean(row.paymentCondition),
+        referenceName: clean(row.referenceName),
+        remarks: clean(row.remarks),
+      }))
 
-    if (!Array.isArray(parsedData.transactions) || parsedData.transactions.length === 0) {
-      showToast('OCR text did not contain any readable Sauda Purchase transaction rows.', 'error')
+    if (previewRows.length === 0) {
+      showToast('No Sauda Purchase transaction rows could be read from the image.', 'error')
       return
     }
 
-    const previewRows = parsedData.transactions.map((transaction, index) => ({
-      id: `ocr-${Date.now()}-${index}`,
-      date: parseDateToDB(transaction.date || parsedData.date),
-      mainHeading: transaction.mainHeading || parsedData.mainHeading || '',
-      itemName: transaction.itemName || '',
-      sizeMm: transaction.sizeMm || '',
-      partyName: transaction.partyName || '',
-      orderQuantity: transaction.orderQuantity ?? '',
-      rateMt: transaction.rateMt ?? '',
-      qtyReceived: transaction.qtyReceived ?? '',
-      balPending: transaction.balPending ?? '',
-      broker: transaction.broker || '',
-      deliveryTerms: transaction.deliveryTerms || '',
-      paymentCondition: transaction.paymentCondition || '',
-      referenceName: transaction.referenceName || '',
-      remarks: transaction.remarks || '',
-    }))
-
     setCsvPreview(previewRows)
-    showToast(`OCR extracted ${previewRows.length} entries. Review and save them below.`)
+    showToast(`Read ${previewRows.length} entries from the image. Review and save them below.`)
   }
 
   // --- Render Form Section (Modal Theme) ---
@@ -300,7 +300,7 @@ const SaudaPurchase = () => {
         <span className="hidden sm:inline">CSV</span>
       </CsvDropzone>
 
-      <OCRImageUploader onTextExtracted={handleOcrUpload} />
+      <OCRImageUploader aiPage="sauda_purchase" onAiResult={handleAiResult} />
 
       <button 
         onClick={() => setIsPromptModalOpen(true)}
@@ -660,7 +660,7 @@ DATE, MATERIAL NAME, SIZE (MM), PARTY NAME, ODER QTY., RATE/MT IN Rs, QTY. RECEI
             <span className="hidden sm:inline">CSV</span>
           </CsvDropzone>
 
-          <OCRImageUploader onTextExtracted={handleOcrUpload} className="h-10" />
+          <OCRImageUploader aiPage="sauda_purchase" onAiResult={handleAiResult} className="h-10" />
 
           <button 
             onClick={() => setIsPromptModalOpen(true)}

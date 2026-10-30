@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useProduction2Store } from '../store/useStore';
 import { localDb } from '../services/localDb';
 import OCRImageUploader from '../components/OCRImageUploader';
-import { parseProductionOCR } from '../utils/ocrParsers';
+import { clean, toIsoDate } from '../utils/aiOcr';
 import DateFilter from '../components/DateFilter';
 import './Production2.css';
 
@@ -305,29 +305,38 @@ export default function Production2Page() {
     setFilesData((prev) => prev.filter((_, idx) => idx !== idxToRemove));
   };
 
-  const handleOcrUpload = (extractedText) => {
-    console.log(extractedText)
-    const { rows: ocrRows } = parseProductionOCR(extractedText);
-    if (!ocrRows || ocrRows.length === 0) {
+  const handleAiResult = (data) => {
+    const numOrNull = (v) => { const n = parseFloat(clean(v).replace(/,/g, '').replace(/%$/, '')); return Number.isFinite(n) ? n : null };
+    const mappedItems = (data.rows || [])
+      .filter((row) => clean(row.metricName))
+      .map((row) => {
+        let k1 = numOrNull(row.k1Value);
+        let tot = numOrNull(row.totalValue);
+        // A single printed value column is both Kiln 1 and the total
+        if (k1 !== null && tot === null) tot = k1;
+        if (tot !== null && k1 === null) k1 = tot;
+        return {
+          label: clean(row.metricName),
+          percent: numOrNull(row.percentValue),
+          kiln1: k1 ?? 0,
+          kiln2: numOrNull(row.k2Value) ?? 0,
+          total: tot ?? 0
+        };
+      });
+
+    if (mappedItems.length === 0) {
       setErrorMsg("Image me PRODUCTION data nahi mila.");
       return;
     }
-    
-    const mappedItems = ocrRows.map(row => ({
-      label: row.metricName,
-      percent: parseFloat(row.percentValue) || null,
-      kiln1: parseFloat(row.k1Value) || 0,
-      kiln2: parseFloat(row.k2Value) || 0,
-      total: parseFloat(row.totalValue) || 0
-    }));
+    setErrorMsg("");
 
     const newResult = {
-      date: new Date().toISOString().split('T')[0],
+      date: clean(data.date) ? toIsoDate(data.date) : new Date().toISOString().split('T')[0],
       fileName: "Image OCR Entry",
       found: true,
       items: mappedItems
     };
-    
+
     setFilesData((prev) => [...prev, newResult]);
     alert("Image se data extract ho gaya!");
   };
@@ -469,7 +478,8 @@ export default function Production2Page() {
       <div className="flex flex-wrap items-center justify-between gap-3 bg-white p-3 rounded-lg border border-slate-200 shadow-sm print:hidden mb-4">
         <div className="flex flex-wrap items-center gap-2">
           <OCRImageUploader 
-            onTextExtracted={handleOcrUpload} 
+            aiPage="production"
+            onAiResult={handleAiResult} 
             buttonLabel="Scan Production Slip"
             className="px-5 h-10 bg-purple-50 hover:bg-purple-100 border border-purple-200 text-purple-700 font-bold rounded-lg transition flex items-center gap-2 shadow-sm"
           />

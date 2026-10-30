@@ -2,7 +2,7 @@ import { useState, useMemo } from 'react'
 import { useProductionStore } from '../store/useStore'
 import { CsvDropzone } from '../components/CsvDropzone'
 import OCRImageUploader from '../components/OCRImageUploader'
-import { parseProductionOCR } from '../utils/ocrParsers'
+import { clean } from '../utils/aiOcr'
 
 const initialFormState = {
   metricName: 'Sponge Prod. (Mt)',
@@ -196,14 +196,23 @@ const Production = () => {
   }
 
   // --- OCR Upload Handler ---
-  const handleOcrUpload = (extractedText) => {
-    const { rows: ocrRows, remarks } = parseProductionOCR(extractedText)
-    if (ocrRows && ocrRows.length > 0) {
-      setRows(ocrRows)
-      if (remarks) setDownTimeRemarks(remarks)
-      showToast('OCR data extracted successfully. Please review the details.')
+  const handleAiResult = (data) => {
+    const aiRows = (data.rows || [])
+      .filter((r) => clean(r.metricName))
+      .map((r) => ({
+        id: Date.now() + Math.random(),
+        metricName: clean(r.metricName),
+        percentValue: clean(r.percentValue).replace('%', ''),
+        k1Value: clean(r.k1Value),
+        k2Value: clean(r.k2Value),
+        totalValue: clean(r.totalValue),
+      }))
+    if (aiRows.length > 0) {
+      setRows(aiRows)
+      if (clean(data.downTimeRemarks)) setDownTimeRemarks(clean(data.downTimeRemarks))
+      showToast(`Read ${aiRows.length} production rows from the image. Please review the details.`)
     } else {
-      showToast('No valid production data found in OCR text.', 'error')
+      showToast('No production rows found in the image.', 'error')
     }
   }
 
@@ -230,7 +239,8 @@ const Production = () => {
           </CsvDropzone>
 
           <OCRImageUploader 
-            onTextExtracted={handleOcrUpload} 
+            aiPage="production"
+            onAiResult={handleAiResult} 
             className="px-6 py-2 bg-purple-50 hover:bg-purple-100 border border-purple-200 text-purple-700 font-medium rounded-md transition flex items-center gap-1"
           />
 

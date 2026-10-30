@@ -7,7 +7,9 @@
     "dev": "vite --host",
     "build": "vite build",
     "lint": "eslint . --ext js,jsx --report-unused-disable-directives --max-warnings 0",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:ocr:offline": "node server/selftest.mjs",
+    "test:ocr:images": "node tools/ocr-test/run-images.mjs"
   },
   "dependencies": {
     "html2canvas": "^1.4.1",
