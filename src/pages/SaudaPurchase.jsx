@@ -107,6 +107,7 @@ const SaudaPurchase = () => {
     }
 
     const payload = {
+      report_date: headerDate || form.date || new Date().toISOString().split('T')[0],
       date: form.date,
       main_heading: form.mainHeading,
       item_name: form.itemName,
@@ -552,8 +553,8 @@ DATE, MATERIAL NAME, SIZE (MM), PARTY NAME, ODER QTY., RATE/MT IN Rs, QTY. RECEI
                 return (
                   <React.Fragment key={`group-${groupIdx}`}>
                     {/* Group Header Row */}
-                    <tr className="bg-slate-50">
-                      <td colSpan="14" className="px-2 py-1.5 text-left font-bold text-slate-800 text-[11px] uppercase tracking-widest text-indigo-600 border border-slate-400">
+                    <tr className="bg-slate-100/80">
+                      <td colSpan="14" className="px-3 py-2 text-center font-extrabold text-slate-800 text-xs sm:text-sm uppercase tracking-wider border border-slate-400">
                         {mainHeadingName}
                       </td>
                     </tr>
@@ -596,23 +597,7 @@ DATE, MATERIAL NAME, SIZE (MM), PARTY NAME, ODER QTY., RATE/MT IN Rs, QTY. RECEI
                       <td className="px-2 py-1.5 text-right text-slate-800 font-bold border border-slate-400">{formatNumber(subBal)}</td>
                       <td colSpan="6" className="border border-slate-400"></td>
                     </tr>
-                    
-                    {/* Subtotal Verification Row */}
-                    {(() => {
-                      const expectedSubBal = subOrder - subReceived;
-                      const isCorrect = Math.abs(expectedSubBal - subBal) < 0.001;
-                      return (
-                        <tr className={isCorrect ? "bg-emerald-50/40" : "bg-rose-50/40"}>
-                          <td colSpan="7" className={`border border-slate-400 px-2 py-1 text-right text-[10px] font-semibold italic ${isCorrect ? 'text-emerald-600' : 'text-rose-600'}`}>
-                            {isCorrect ? 'Calculation Verified' : 'Calculation Mismatch'}
-                          </td>
-                          <td className={`border border-slate-400 px-2 py-1 text-right font-bold text-[10px] ${isCorrect ? 'text-emerald-700 bg-emerald-100/50' : 'text-rose-600 bg-rose-100/50'}`}>
-                            {isCorrect ? 'Correct' : `Expected: ${formatNumber(expectedSubBal)}`}
-                          </td>
-                          <td colSpan="6" className="border border-slate-400"></td>
-                        </tr>
-                      );
-                    })()}
+
                   </React.Fragment>
                 )
               })}
@@ -692,6 +677,7 @@ DATE, MATERIAL NAME, SIZE (MM), PARTY NAME, ODER QTY., RATE/MT IN Rs, QTY. RECEI
                 onClick={async () => {
                   setIsLoading(true)
                   const payloads = csvPreview.map(item => ({
+                    report_date: headerDate || item.date || new Date().toISOString().split('T')[0],
                     date: item.date,
                     main_heading: item.mainHeading,
                     item_name: item.itemName,

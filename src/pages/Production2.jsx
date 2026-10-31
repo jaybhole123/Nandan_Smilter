@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useProduction2Store } from '../store/useStore';
 import { localDb } from '../services/localDb';
 import OCRImageUploader from '../components/OCRImageUploader';
-import { clean, toIsoDate } from '../utils/aiOcr';
+import { clean, toIsoDate, extractFromImage } from '../utils/aiOcr';
 import DateFilter from '../components/DateFilter';
 import './Production2.css';
 
@@ -230,16 +230,14 @@ export default function Production2Page() {
     setIsSavingDB(true);
     let payloads = [];
 
+    // The working submission date is the currently selected headerDate
+    let targetDate = headerDate || new Date().toISOString().split('T')[0];
+
     filesData.forEach(f => {
       f.items.forEach(item => {
-        let reportDate = headerDate || new Date().toISOString().split('T')[0];
-        if (f.date && f.date.match(/^\d{4}-\d{2}-\d{2}$/)) {
-          reportDate = f.date;
-        }
-
         payloads.push({
-          report_date: reportDate,
-          source_file: f.fileName || 'Manual Entry',
+          report_date: targetDate,
+          source_file: f.fileName || 'Production Entry',
           item_grade: item.label,
           percent: item.percent ?? null,
           kiln1: item.kiln1 ?? 0,
@@ -255,10 +253,11 @@ export default function Production2Page() {
       return;
     }
 
-    localDb.delete('production2', (row) => row.report_date === headerDate);
+    localDb.delete('production2', (row) => row.report_date === targetDate);
     localDb.insert('production2', payloads);
-    alert("Production data successfully save ho gaya!");
-    fetchData(headerDate);
+    alert(`Production data (${payloads.length} entries) successfully LocalStorage me save ho gaya!`);
+    setHeaderDate(targetDate);
+    fetchData(targetDate);
     setIsSavingDB(false);
   };
 
@@ -270,26 +269,66 @@ export default function Production2Page() {
   }, []);
 
   const handleFiles = async (fileList) => {
-    const fileArr = Array.from(fileList || []).filter(
-      (f) => f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf")
-    );
-    if (fileArr.length === 0) {
-      setErrorMsg("Sirf PDF file(s) upload karein.");
-      return;
-    }
-    setErrorMsg("");
+    const allFiles = Array.from(fileList || []);
+    if (allFiles.length === 0) return;
 
+    setErrorMsg("");
     let done = 0;
     const newFiles = [];
-    for (const file of fileArr) {
-      setProgressMsg(`Reading ${file.name}… (${done + 1}/${fileArr.length})`);
+
+    for (const file of allFiles) {
+      const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+      const isImage = file.type.startsWith("image/");
+
+      if (!isPdf && !isImage) {
+        setErrorMsg(`"${file.name}" supported nahi hai. Sirf PDF ya Image files upload karein.`);
+        continue;
+      }
+
+      setProgressMsg(`Reading ${file.name}… (${done + 1}/${allFiles.length})`);
       try {
-        const result = await parsePdfFile(file);
-        if (!result.found) {
-          setErrorMsg(`"${file.name}" me PRODUCTION section ka data nahi mila. Format check karein.`);
-        } else {
-          result.fileUrl = URL.createObjectURL(file);
-          newFiles.push(result);
+        if (isPdf) {
+          const result = await parsePdfFile(file);
+          if (!result.found) {
+            setErrorMsg(`"${file.name}" me PRODUCTION section ka data nahi mila. Format check karein.`);
+          } else {
+            result.fileUrl = URL.createObjectURL(file);
+            // Use currently selected headerDate as the working submission date
+            result.date = headerDate || new Date().toISOString().split('T')[0];
+            newFiles.push(result);
+          }
+        } else if (isImage) {
+          // Process Image using AI OCR
+          const res = await extractFromImage(file, 'production');
+          const data = res.data || {};
+          const numOrNull = (v) => { const n = parseFloat(clean(v).replace(/,/g, '').replace(/%$/, '')); return Number.isFinite(n) ? n : null };
+          const mappedItems = (data.rows || [])
+            .filter((row) => clean(row.metricName))
+            .map((row) => {
+              let k1 = numOrNull(row.k1Value);
+              let tot = numOrNull(row.totalValue);
+              if (k1 !== null && tot === null) tot = k1;
+              if (tot !== null && k1 === null) k1 = tot;
+              return {
+                label: clean(row.metricName),
+                percent: numOrNull(row.percentValue),
+                kiln1: k1 ?? 0,
+                kiln2: numOrNull(row.k2Value) ?? 0,
+                total: tot ?? 0
+              };
+            });
+
+          if (mappedItems.length === 0) {
+            setErrorMsg(`"${file.name}" me PRODUCTION data nahi mila.`);
+          } else {
+            const activeDate = headerDate || new Date().toISOString().split('T')[0];
+            newFiles.push({
+              date: activeDate,
+              fileName: file.name || "Image Production Slip",
+              found: true,
+              items: mappedItems
+            });
+          }
         }
       } catch (err) {
         console.error(err);
@@ -298,7 +337,9 @@ export default function Production2Page() {
       done++;
     }
     setProgressMsg("");
-    setFilesData((prev) => [...prev, ...newFiles]);
+    if (newFiles.length > 0) {
+      setFilesData((prev) => [...prev, ...newFiles]);
+    }
   };
 
   const removeFile = (idxToRemove) => {
@@ -330,15 +371,16 @@ export default function Production2Page() {
     }
     setErrorMsg("");
 
+    const activeDate = headerDate || new Date().toISOString().split('T')[0];
     const newResult = {
-      date: clean(data.date) ? toIsoDate(data.date) : new Date().toISOString().split('T')[0],
+      date: activeDate,
       fileName: "Image OCR Entry",
       found: true,
       items: mappedItems
     };
 
     setFilesData((prev) => [...prev, newResult]);
-    alert("Image se data extract ho gaya!");
+    alert("Image se data extract ho gaya! 'Save Data to DB' dabayein persist karne ke liye.");
   };
 
   const handleManualSubmit = (e) => {
@@ -470,7 +512,7 @@ export default function Production2Page() {
         
         <div className="z-10 text-center sm:text-left mb-1 sm:mb-0">
           <p className="text-emerald-100 text-[10px] font-semibold uppercase tracking-wider mb-0.5">Module</p>
-          <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Production 2</h1>
+          <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Production</h1>
         </div>
       </div>
 
@@ -490,7 +532,7 @@ export default function Production2Page() {
             className="px-4 h-10 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-700 font-semibold rounded-lg shadow-sm transition flex items-center gap-2"
           >
             <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
-            <span>Upload PDF</span>
+            <span>Upload PDF / Image</span>
           </button>
         </div>
 
@@ -512,14 +554,14 @@ export default function Production2Page() {
           <input
             ref={fileInputRef}
             type="file"
-            accept="application/pdf,.pdf"
+            accept="application/pdf,.pdf,image/*"
             multiple
             hidden
             onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }}
           />
-          <div className="text-5xl mb-4 opacity-80 group-hover:Sale-110 transition-transform duration-300">🏭</div>
-          <p className="text-lg font-semibold text-slate-700 mb-1">Upload Production PDF (2)</p>
-          <p className="text-sm text-slate-500">Drag & drop your PDF files here, or click to browse</p>
+          <div className="text-5xl mb-4 opacity-80 group-hover:scale-110 transition-transform duration-300">🏭</div>
+          <p className="text-lg font-semibold text-slate-700 mb-1">Upload Production PDF / Image</p>
+          <p className="text-sm text-slate-500">Drag & drop your PDF or Image files here, or click to browse</p>
           
           {progressMsg && <p className="mt-4 text-sm font-medium text-blue-600 bg-blue-50 py-2 px-4 rounded-full inline-block">{progressMsg}</p>}
           {errorMsg && <p className="mt-4 text-sm font-medium text-rose-600 bg-rose-50 py-2 px-4 rounded-full inline-block">{errorMsg}</p>}
@@ -528,12 +570,20 @@ export default function Production2Page() {
 
         <div className="flex justify-between items-center mb-4 mt-8">
           <h2 className="text-xl font-bold text-slate-800 tracking-tight">Production Data</h2>
-          <div className="flex gap-2">
+          <div className="flex items-center gap-2">
             <button className="p-2 text-slate-500 hover:bg-slate-100 rounded-md transition-colors" onClick={() => document.getElementById('filesContainer').scrollBy({ left: -800, behavior: 'smooth' })} title="Scroll Left">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
             </button>
             <button className="p-2 text-slate-500 hover:bg-slate-100 rounded-md transition-colors" onClick={() => document.getElementById('filesContainer').scrollBy({ left: 800, behavior: 'smooth' })} title="Scroll Right">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+            </button>
+            <button 
+              className="px-4 py-2 text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-md transition-colors shadow-sm disabled:opacity-50 flex items-center gap-1.5" 
+              onClick={handleSaveToDB} 
+              disabled={isSavingDB}
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
+              <span>{isSavingDB ? 'Saving...' : 'Save Data to DB'}</span>
             </button>
             <button className="px-4 py-2 text-sm font-semibold text-rose-600 bg-rose-50 hover:bg-rose-100 rounded-md transition-colors border border-rose-200" onClick={handleClearAll}>Clear All</button>
           </div>
@@ -780,22 +830,7 @@ export default function Production2Page() {
                           </td>
                           <td colSpan="2"></td>
                         </tr>
-                        {(() => {
-                          const expectedTotal = filteredItems.reduce((acc, curr) => acc + (curr.kiln1 || 0), 0) + filteredItems.reduce((acc, curr) => acc + (curr.kiln2 || 0), 0);
-                          const actualTotal = filteredItems.reduce((acc, curr) => acc + (curr.total || 0), 0);
-                          const isCorrect = Math.abs(expectedTotal - actualTotal) < 0.001;
-                          return (
-                            <tr className={isCorrect ? "bg-emerald-50/40" : "bg-rose-50/40"}>
-                              <td colSpan="3" className={`border-b border-slate-100 px-3 py-1 text-right text-[10px] font-semibold italic ${isCorrect ? 'text-emerald-600' : 'text-rose-600'}`}>
-                                {isCorrect ? 'Calculation Verified' : 'Calculation Mismatch'}
-                              </td>
-                              <td className={`border-b border-slate-100 px-3 py-1 text-center font-bold text-[10px] ${isCorrect ? 'text-emerald-700 bg-emerald-100/50' : 'text-rose-600 bg-rose-100/50'}`}>
-                                {isCorrect ? 'Correct' : `Expected: ${fmt(expectedTotal)}`}
-                              </td>
-                              <td colSpan="2" className="border-b border-slate-100"></td>
-                            </tr>
-                          );
-                        })()}
+
                       </tbody>
                     </table>
                   </div>

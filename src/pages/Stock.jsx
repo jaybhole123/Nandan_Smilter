@@ -23,11 +23,26 @@ const initialForm = {
   remarks: '',
 }
 
+// Canonical Category Keys and Labels matching the physical plant sheet
+export const RAW_CATEGORY_KEYS = {
+  RAW_IRON_ORE: 'raw_iron_ore',
+  RAW_PELLET_ORE: 'raw_pellet_ore',
+  PROCESSED_IRON_ORE: 'processed_iron_ore',
+  IRON_FINES: 'iron_fines',
+}
+
+const RAW_CATEGORY_ORDER = [
+  RAW_CATEGORY_KEYS.RAW_IRON_ORE,
+  RAW_CATEGORY_KEYS.RAW_PELLET_ORE,
+  RAW_CATEGORY_KEYS.PROCESSED_IRON_ORE,
+  RAW_CATEGORY_KEYS.IRON_FINES,
+]
+
 const categoryOptions = [
-  { value: '', label: 'RAW IRON ORE' },
-  { value: 'rawPelletOre', label: 'RAW PELLET ORE' },
-  { value: 'processedIronOre', label: 'PROCESSED IRON ORE (3-18)' },
-  { value: 'ironFines', label: 'IRON FINES (0-3)' },
+  { value: RAW_CATEGORY_KEYS.RAW_IRON_ORE, label: 'RAW IRON ORE' },
+  { value: RAW_CATEGORY_KEYS.RAW_PELLET_ORE, label: 'RAW PELLET ORE' },
+  { value: RAW_CATEGORY_KEYS.PROCESSED_IRON_ORE, label: 'PROCESSED IRON ORE (3-18)' },
+  { value: RAW_CATEGORY_KEYS.IRON_FINES, label: 'IRON FINES (0-3)' },
 ]
 
 const unitOptions = ['kg', 'ton', 'mt', 'pcs', 'bag', 'packet']
@@ -55,20 +70,26 @@ const formatPercentValue = (value) => {
   return `${Number(value).toFixed(3)}%`
 }
 
-const getCategoryLabel = (category) => {
-  const found = categoryOptions.find(opt => opt.value === category)
-  return found ? found.label : category
+// Normalizes any stored value or sheet heading into one of the canonical keys
+const normalizeCategory = (category, fallback = RAW_CATEGORY_KEYS.RAW_IRON_ORE) => {
+  const s = String(category ?? '').trim().toLowerCase()
+  if (!s || s === 'raw_iron_ore' || s === 'raw iron ore' || s === "''" || s === '""') return RAW_CATEGORY_KEYS.RAW_IRON_ORE
+  if (s.includes('pellet')) return RAW_CATEGORY_KEYS.RAW_PELLET_ORE
+  if (s.includes('processed')) return RAW_CATEGORY_KEYS.PROCESSED_IRON_ORE
+  if (s.includes('fine')) return RAW_CATEGORY_KEYS.IRON_FINES
+  if (s.includes('iron') && s.includes('ore')) return RAW_CATEGORY_KEYS.RAW_IRON_ORE
+  return fallback || RAW_CATEGORY_KEYS.RAW_IRON_ORE
 }
 
-// Maps a sheet group heading to the category value this page stores ('' = RAW IRON ORE)
+const getCategoryLabel = (category) => {
+  const norm = normalizeCategory(category)
+  const found = categoryOptions.find(opt => opt.value === norm)
+  return found ? found.label : (category || 'RAW IRON ORE')
+}
+
+// Maps a sheet group heading to the category value this page stores
 const categoryFromHeading = (heading, fallback) => {
-  const h = clean(heading)
-  if (!h) return fallback
-  if (/pellet/i.test(h)) return 'rawPelletOre'
-  if (/processed/i.test(h)) return 'processedIronOre'
-  if (/fines/i.test(h)) return 'ironFines'
-  if (/irons*ore/i.test(h)) return ''
-  return h
+  return normalizeCategory(heading, fallback)
 }
 
 const Stock = () => {
@@ -87,10 +108,10 @@ const Stock = () => {
       const rawRows = localDb.select('raw_material_stock')
       const coalRows = localDb.select('coal_stock')
 
-      const sortItems = (arr) => arr.sort((a, b) => {
-        const cat = (b.created_at || '').localeCompare(a.created_at || '')
-        if (cat !== 0) return cat
-        return (a.material || '').localeCompare(b.material || '')
+      const sortItems = (arr) => arr.slice().sort((a, b) => {
+        // Keep in insertion order so rows match the sheet exactly
+        if (a.id && b.id) return a.id - b.id
+        return (a.created_at || '').localeCompare(b.created_at || '')
       })
 
       const mappedRaw = sortItems(rawRows).map(item => ({
@@ -261,6 +282,7 @@ const Stock = () => {
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [isPromptModalOpen, setIsPromptModalOpen] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
+  const [stockPreview, setStockPreview] = useState(null) // { type: 'raw_material' | 'coal_detail', rows: [], date: string }
 
   const [coalRows, setCoalRows] = useState([{ material: '', openingStock: '', inward: '', consumption: '', fc: '', moistLossPct: '', dispatch: '', landedCost: '', closingStock: '' }])
   const [coalCategory, setCoalCategory] = useState('COAL DETAILS')
@@ -280,8 +302,9 @@ const Stock = () => {
       if (activeTab === 'raw_material' && isCoal) return false
 
       if (reportDate) {
-        const createdDate = new Date(item.createdAt).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
-        if (createdDate !== reportDate) return false
+        // Compare against item's reportDate (or formatted createdAt if reportDate not set)
+        const itemDate = item.reportDate || (item.createdAt ? new Date(item.createdAt).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }) : '')
+        if (itemDate && itemDate !== reportDate) return false
       }
 
       return item.material.toLowerCase().includes(normalized) ||
@@ -449,69 +472,156 @@ const Stock = () => {
   }
 
   // --- OCR Upload Handlers ---
-  // The sheet's date ("AS ON DATE" when printed) becomes the report date the rows are saved under
-  const applyAiReportDate = (data) => {
-    if (/^d{4}-d{2}-d{2}$/.test(clean(data.reportDate))) setReportDate(clean(data.reportDate))
-  }
-
   const handleRawMaterialAi = (data) => {
+    // Use the currently selected/active page date (submission date)
+    const activeDate = reportDate || new Date().toISOString().split('T')[0]
+
     const newRows = (data.rows || [])
       .filter((row) => clean(row.material))
-      .map((row) => ({
-        ...initialForm,
-        category: categoryFromHeading(row.category, rowsCategory || ''),
-        material: clean(row.material),
-        openingStock: clean(row.openingStock) || '0',
-        inward: clean(row.inward) || '0',
-        consumption: clean(row.consumption) || '0',
-        crushing: clean(row.crushing) || '0%',
-        fines3: clean(row.fines3) || '0%',
-        fines3Qty: clean(row.fines3Qty) || '0',
-        production: clean(row.production) || '0',
-        dispatch: clean(row.dispatch) || '0',
-        closingStock: clean(row.closingStock) || '0',
-      }))
+      .map((row, index) => {
+        const cat = categoryFromHeading(row.category, rowsCategory || '') || 'RAW IRON ORE'
+        const op = Number(clean(row.openingStock)) || 0
+        const inw = Number(clean(row.inward)) || 0
+        const cons = Number(clean(row.consumption)) || 0
+        const cr = clean(row.crushing) || '0%'
+        const fPct = clean(row.fines3) || '0%'
+        const fQty = Number(clean(row.fines3Qty)) || 0
+        const prod = Number(clean(row.production)) || 0
+        const dis = Number(clean(row.dispatch)) || 0
+        // Calculate closing if not provided or use verbatim
+        let cl = clean(row.closingStock)
+        if (!cl) {
+          cl = (op + inw - cons - fQty + prod - dis).toFixed(3)
+        }
+        return {
+          id: `preview-raw-${Date.now()}-${index}`,
+          category: cat,
+          material: clean(row.material),
+          openingStock: op,
+          inward: inw,
+          consumption: cons,
+          crushing: cr,
+          fines3: fPct,
+          fines3Qty: fQty,
+          production: prod,
+          dispatch: dis,
+          closingStock: Number(cl) || 0,
+          unit: 'ton',
+          remarks: clean(row.remarks) || ''
+        }
+      })
 
     if (newRows.length === 0) {
       setToast({ type: 'error', message: 'No raw material rows could be read from the image.' })
       return
     }
 
-    applyAiReportDate(data)
-    setRows(newRows)
+    setStockPreview({
+      type: 'raw_material',
+      date: activeDate,
+      rows: newRows
+    })
     setActiveTab('raw_material')
-    setIsModalOpen(true)
-    setToast({ type: 'success', message: `Read ${newRows.length} raw material rows from the image. Review and save them.` })
+    setToast({ type: 'success', message: `Read ${newRows.length} raw material rows. Preview shown below.` })
   }
 
   const handleCoalAi = (data) => {
+    // Use the currently selected/active page date (submission date)
+    const activeDate = reportDate || new Date().toISOString().split('T')[0]
+
     const newRows = (data.rows || [])
       .filter((row) => clean(row.material))
-      .map((row) => ({
-        category: coalCategory || 'COAL DETAILS',
-        material: clean(row.material),
-        openingStock: clean(row.openingStock) || '0',
-        inward: clean(row.inward) || '0',
-        consumption: clean(row.consumption) || '0',
-        fc: clean(row.fc) || '-',
-        moistLossPct: clean(row.moistLossPct) || '0%',
-        landedCost: clean(row.landedCost) || '0',
-        dispatch: clean(row.dispatch) || '0',
-        closingStock: clean(row.closingStock) || '0',
-        remarks: '',
-      }))
+      .map((row, index) => {
+        const cat = clean(row.category) || coalCategory || 'COAL DETAILS'
+        const op = Number(clean(row.openingStock)) || 0
+        const inw = Number(clean(row.inward)) || 0
+        const cons = Number(clean(row.consumption)) || 0
+        const fcVal = clean(row.fc) || '-'
+        const moist = clean(row.moistLossPct) || '0%'
+        const landed = Number(clean(row.landedCost)) || 0
+        const dis = Number(clean(row.dispatch)) || 0
+        let cl = clean(row.closingStock)
+        if (!cl) {
+          cl = (op + inw - cons - dis).toFixed(3)
+        }
+        return {
+          id: `preview-coal-${Date.now()}-${index}`,
+          category: cat,
+          material: clean(row.material),
+          openingStock: op,
+          inward: inw,
+          consumption: cons,
+          fc: fcVal,
+          moistLossPct: moist,
+          landedCost: landed,
+          dispatch: dis,
+          closingStock: Number(cl) || 0,
+          remarks: clean(row.remarks) || ''
+        }
+      })
 
     if (newRows.length === 0) {
       setToast({ type: 'error', message: 'No coal rows could be read from the image.' })
       return
     }
 
-    applyAiReportDate(data)
-    setSelectedId(null)
-    setCoalRows(newRows)
+    setStockPreview({
+      type: 'coal_detail',
+      date: activeDate,
+      rows: newRows
+    })
     setActiveTab('coal_detail')
-    setIsModalOpen(true)
-    setToast({ type: 'success', message: `Read ${newRows.length} coal rows from the image. Review and save them.` })
+    setToast({ type: 'success', message: `Read ${newRows.length} coal rows. Preview shown below.` })
+  }
+
+  const handleSavePreviewData = () => {
+    if (!stockPreview || !stockPreview.rows?.length) return
+    setIsSaving(true)
+    const saveDate = stockPreview.date || reportDate || new Date().toISOString().split('T')[0]
+
+    if (stockPreview.type === 'raw_material') {
+      const payloads = stockPreview.rows.map(r => ({
+        category: r.category || 'RAW IRON ORE',
+        material: r.material.trim(),
+        opening_stock: Number(r.openingStock) || 0,
+        inward: Number(r.inward) || 0,
+        consumption: Number(r.consumption) || 0,
+        crushing: r.crushing || '0%',
+        fines3: parsePercentValue(r.fines3) || 0,
+        fines3_qty: Number(r.fines3Qty) || 0,
+        production: Number(r.production) || 0,
+        dispatch: Number(r.dispatch) || 0,
+        closing_stock: Number(r.closingStock) || 0,
+        unit: r.unit || 'ton',
+        remarks: r.remarks || '',
+        report_date: saveDate
+      }))
+      localDb.insert('raw_material_stock', payloads)
+      setToast({ type: 'success', message: `${payloads.length} raw material stock item(s) saved.` })
+    } else {
+      const payloads = stockPreview.rows.map(r => ({
+        category: r.category || 'COAL DETAILS',
+        material: r.material.trim(),
+        opening_stock: Number(r.openingStock) || 0,
+        inward: Number(r.inward) || 0,
+        consumption: Number(r.consumption) || 0,
+        fc: r.fc || '',
+        moist_loss_pct: r.moistLossPct || '',
+        moist_loss_qty: 0,
+        landed_cost: Number(r.landedCost) || 0,
+        dispatch: Number(r.dispatch) || 0,
+        closing_stock: Number(r.closingStock) || 0,
+        remarks: r.remarks || '',
+        report_date: saveDate
+      }))
+      localDb.insert('coal_stock', payloads)
+      setToast({ type: 'success', message: `${payloads.length} coal stock item(s) saved.` })
+    }
+
+    fetchDbItems()
+    setReportDate(saveDate)
+    setStockPreview(null)
+    setIsSaving(false)
   }
 
   const addCoalRow = () => setCoalRows((s) => ([...s, { material: '', openingStock: '', inward: '', consumption: '', fc: '', moistLossPct: '', dispatch: '', landedCost: '', closingStock: '' }]))
@@ -709,34 +819,57 @@ const Stock = () => {
     }
   }
 
-  // --- Helper to Group and Calculate Totals ---
+  // --- Canonical Category Order to match physical plant sheet exactly ---
+  const RAW_CATEGORY_SEQUENCE = [
+    RAW_CATEGORY_KEYS.RAW_IRON_ORE,
+    RAW_CATEGORY_KEYS.RAW_PELLET_ORE,
+    RAW_CATEGORY_KEYS.PROCESSED_IRON_ORE,
+    RAW_CATEGORY_KEYS.IRON_FINES,
+  ]
+
+  // --- Helper to Group and Calculate Totals in Exact Sheet Order ---
   const groupedAndTotals = useMemo(() => {
     const groups = {}
     filteredItems.forEach(item => {
-      if (!groups[item.category]) {
-        groups[item.category] = {
-          label: getCategoryLabel(item.category),
+      const catKey = activeTab === 'raw_material' ? normalizeCategory(item.category) : (item.category || 'COAL DETAILS')
+      if (!groups[catKey]) {
+        groups[catKey] = {
+          label: getCategoryLabel(catKey),
           rows: [],
           totals: { opening: 0, inward: 0, consumption: 0, fines3: 0, fines3Qty: 0, production: 0, dispatch: 0, closing: 0, moistLossQty: 0, landedCost: 0 }
         }
       }
-      groups[item.category].rows.push(item)
+      groups[catKey].rows.push(item)
       
       // Aggregate totals for the Category
-      groups[item.category].totals.opening += Number(item.openingStock) || 0
-      groups[item.category].totals.inward += Number(item.inward) || 0
-      groups[item.category].totals.consumption += Number(item.consumption) || 0
-      groups[item.category].totals.fines3 += Number(item.fines3) || 0
-      groups[item.category].totals.fines3Qty += Number(item.fines3Qty) || 0
-      groups[item.category].totals.production += Number(item.production) || 0
-      groups[item.category].totals.dispatch += Number(item.dispatch) || 0
-      groups[item.category].totals.closing += Number(item.closingStock) || 0
+      groups[catKey].totals.opening += Number(item.openingStock) || 0
+      groups[catKey].totals.inward += Number(item.inward) || 0
+      groups[catKey].totals.consumption += Number(item.consumption) || 0
+      groups[catKey].totals.fines3 += Number(item.fines3) || 0
+      groups[catKey].totals.fines3Qty += Number(item.fines3Qty) || 0
+      groups[catKey].totals.production += Number(item.production) || 0
+      groups[catKey].totals.dispatch += Number(item.dispatch) || 0
+      groups[catKey].totals.closing += Number(item.closingStock) || 0
       
-      groups[item.category].totals.moistLossQty += Number(item.moistLossQty) || 0
-      groups[item.category].totals.landedCost += Number(item.landedCost) || 0
+      groups[catKey].totals.moistLossQty += Number(item.moistLossQty) || 0
+      groups[catKey].totals.landedCost += Number(item.landedCost) || 0
     })
+
+    if (activeTab === 'raw_material') {
+      const sortedGroups = {}
+      // 1. Add predefined categories in exact canonical sequence
+      RAW_CATEGORY_SEQUENCE.forEach(catKey => {
+        if (groups[catKey]) sortedGroups[catKey] = groups[catKey]
+      })
+      // 2. Add any remaining or custom categories in the order they appeared
+      Object.keys(groups).forEach(catKey => {
+        if (!sortedGroups[catKey]) sortedGroups[catKey] = groups[catKey]
+      })
+      return sortedGroups
+    }
+
     return groups
-  }, [filteredItems])
+  }, [filteredItems, activeTab])
 
   return (
     <div className="space-y-6 pb-10 px-2 sm:px-4 w-full max-w-[1200px] mx-auto text-slate-800">
@@ -765,7 +898,7 @@ const Stock = () => {
             onClick={() => setActiveTab('raw_material')}
             className={`pb-3 px-1 text-[15px] font-semibold border-b-2 transition-colors ${activeTab === 'raw_material' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-500 hover:text-slate-800 hover:border-slate-400'}`}
           >
-            Raw Material Stock (NSPL)
+            Raw Material Stock
           </button>
           <button 
             onClick={() => setActiveTab('coal_detail')}
@@ -791,6 +924,201 @@ const Stock = () => {
           </button>
         </div>
       </div>
+
+      {/* Preview Section - Exact match to user screenshot */}
+      {stockPreview && stockPreview.rows?.length > 0 && (() => {
+        const isRaw = stockPreview.type === 'raw_material'
+
+        // Group preview rows by category and compute group totals
+        const previewGroups = {}
+        stockPreview.rows.forEach(item => {
+          const cat = isRaw ? normalizeCategory(item.category) : (item.category || 'COAL DETAILS')
+          if (!previewGroups[cat]) {
+            previewGroups[cat] = {
+              label: getCategoryLabel(cat),
+              rows: [],
+              totals: { opening: 0, inward: 0, consumption: 0, fines3: 0, fines3Qty: 0, production: 0, dispatch: 0, closing: 0, landedCost: 0 }
+            }
+          }
+          previewGroups[cat].rows.push(item)
+          previewGroups[cat].totals.opening += Number(item.openingStock) || 0
+          previewGroups[cat].totals.inward += Number(item.inward) || 0
+          previewGroups[cat].totals.consumption += Number(item.consumption) || 0
+          previewGroups[cat].totals.fines3 += Number(item.fines3) || 0
+          previewGroups[cat].totals.fines3Qty += Number(item.fines3Qty) || 0
+          previewGroups[cat].totals.production += Number(item.production) || 0
+          previewGroups[cat].totals.dispatch += Number(item.dispatch) || 0
+          previewGroups[cat].totals.closing += Number(item.closingStock) || 0
+          previewGroups[cat].totals.landedCost += Number(item.landedCost) || 0
+        })
+
+        // 2. Sort categories according to the canonical sequence
+        const sortedPreviewGroups = {}
+        if (isRaw) {
+          RAW_CATEGORY_ORDER.forEach(catKey => {
+            if (previewGroups[catKey]) sortedPreviewGroups[catKey] = previewGroups[catKey]
+          })
+          Object.keys(previewGroups).forEach(catKey => {
+            if (!sortedPreviewGroups[catKey]) sortedPreviewGroups[catKey] = previewGroups[catKey]
+          })
+        } else {
+          Object.assign(sortedPreviewGroups, previewGroups)
+        }
+
+        return (
+          <div className="bg-[#e9fbf3] border border-[#a7f3d0] rounded-2xl p-4 sm:p-6 shadow-sm print:hidden transition-all duration-300">
+            {/* Header with badge, title, save date picker & action buttons */}
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-3">
+              <div className="flex flex-col gap-1">
+                <div className="flex items-center gap-2.5">
+                  <span className="bg-[#059669] text-white w-6 h-6 rounded-full flex items-center justify-center font-bold text-xs shadow-sm">
+                    {stockPreview.rows.length}
+                  </span>
+                  <h2 className="text-lg font-bold text-[#065f46] tracking-tight">
+                    Preview Uploaded Stock Data
+                  </h2>
+                </div>
+                <p className="text-xs text-[#047857] font-medium ml-8">
+                  Data will be saved for date: <span className="font-bold underline">{stockPreview.date}</span>
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2.5 w-full sm:w-auto">
+                <div className="flex items-center gap-2 bg-white px-3 py-1.5 border border-[#a7f3d0] rounded-lg shadow-sm">
+                  <span className="text-[11px] font-bold text-[#065f46] uppercase tracking-wider">SAVE DATE:</span>
+                  <input
+                    type="date"
+                    value={stockPreview.date}
+                    onChange={(e) => setStockPreview(prev => ({ ...prev, date: e.target.value }))}
+                    className="text-xs font-semibold text-slate-800 bg-transparent focus:outline-none cursor-pointer"
+                  />
+                </div>
+
+                <button
+                  onClick={handleSavePreviewData}
+                  disabled={isSaving}
+                  className="px-6 py-2 bg-[#059669] hover:bg-[#047857] text-white font-semibold text-sm rounded-lg shadow-sm transition-all flex items-center gap-2 active:scale-95 disabled:opacity-60"
+                >
+                  {isSaving ? 'Saving...' : 'Save Data'}
+                </button>
+
+                <button
+                  onClick={() => setStockPreview(null)}
+                  disabled={isSaving}
+                  className="px-6 py-2 bg-white hover:bg-rose-50 text-rose-600 border border-rose-200 font-semibold text-sm rounded-lg transition-all shadow-sm active:scale-95"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+
+            {/* Preview Table with styling matching user screenshot */}
+            <div className="bg-white rounded-xl border border-[#a7f3d0] overflow-hidden shadow-sm mt-3">
+              <div className="overflow-x-auto max-h-[60vh] overflow-y-auto">
+                <table className="w-full text-xs text-left border-collapse">
+                  <thead className="bg-[#f0fdf4] border-b border-[#a7f3d0] text-[#065f46] text-[11px] font-bold uppercase tracking-wider sticky top-0 z-10 shadow-sm">
+                    <tr>
+                      <th className="px-4 py-3">Material</th>
+                      <th className="px-4 py-3 text-right">Opening Stock</th>
+                      <th className="px-4 py-3 text-right">Inward</th>
+                      <th className="px-4 py-3 text-right">Cons.</th>
+                      {isRaw ? (
+                        <>
+                          <th className="px-4 py-3 text-right">Crushing (+3)</th>
+                          <th className="px-4 py-3 text-right">Fines %</th>
+                          <th className="px-4 py-3 text-right">Fines Qty.</th>
+                          <th className="px-4 py-3 text-right">Prod.</th>
+                          <th className="px-4 py-3 text-right">Dis.</th>
+                        </>
+                      ) : (
+                        <>
+                          <th className="px-4 py-3 text-right">F/C</th>
+                          <th className="px-4 py-3 text-right">Moist.%</th>
+                          <th className="px-4 py-3 text-right">Landed Cost</th>
+                          <th className="px-4 py-3 text-right">Dis.</th>
+                        </>
+                      )}
+                      <th className="px-4 py-3 text-right font-bold text-[#065f46]">Closing Stock</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#ecfdf5] bg-white">
+                    {Object.keys(sortedPreviewGroups).map((catKey) => {
+                      const group = sortedPreviewGroups[catKey]
+                      return (
+                        <React.Fragment key={catKey}>
+                          {/* CATEGORY BAR */}
+                          <tr className="bg-[#ecfdf5] border-y border-[#a7f3d0]/60">
+                            <td
+                              colSpan={isRaw ? 10 : 9}
+                              className="px-4 py-2 font-bold text-[#047857] text-[11px] uppercase tracking-wider"
+                            >
+                              CATEGORY: {group.label}
+                            </td>
+                          </tr>
+
+                          {/* DATA ROWS */}
+                          {group.rows.map((r, rIdx) => (
+                            <tr key={r.id || rIdx} className="hover:bg-[#f0fdf4]/50 transition-colors">
+                              <td className="px-4 py-2.5 font-semibold text-slate-800">{r.material || '-'}</td>
+                              <td className="px-4 py-2.5 text-right font-medium text-slate-600">{formatNumber(r.openingStock)}</td>
+                              <td className="px-4 py-2.5 text-right font-medium text-slate-600">{formatNumber(r.inward)}</td>
+                              <td className="px-4 py-2.5 text-right font-medium text-slate-600">{formatNumber(r.consumption)}</td>
+                              {isRaw ? (
+                                <>
+                                  <td className="px-4 py-2.5 text-right font-medium text-slate-600">{r.crushing || '0%'}</td>
+                                  <td className="px-4 py-2.5 text-right font-medium text-slate-600">{r.fines3 ? (String(r.fines3).includes('%') ? r.fines3 : `${r.fines3}%`) : '0%'}</td>
+                                  <td className="px-4 py-2.5 text-right font-medium text-slate-600">{formatNumber(r.fines3Qty)}</td>
+                                  <td className="px-4 py-2.5 text-right font-medium text-slate-600">{formatNumber(r.production)}</td>
+                                  <td className="px-4 py-2.5 text-right font-medium text-slate-600">{formatNumber(r.dispatch)}</td>
+                                </>
+                              ) : (
+                                <>
+                                  <td className="px-4 py-2.5 text-right font-medium text-slate-600">{r.fc || '-'}</td>
+                                  <td className="px-4 py-2.5 text-right font-medium text-slate-600">{r.moistLossPct || '0%'}</td>
+                                  <td className="px-4 py-2.5 text-right font-medium text-slate-600">{formatNumber(r.landedCost)}</td>
+                                  <td className="px-4 py-2.5 text-right font-medium text-slate-600">{formatNumber(r.dispatch)}</td>
+                                </>
+                              )}
+                              <td className="px-4 py-2.5 text-right font-bold text-[#065f46]">{formatNumber(r.closingStock)}</td>
+                            </tr>
+                          ))}
+
+                          {/* GROUP TOTAL ROW */}
+                          <tr className="bg-[#f0fdf4] font-bold text-slate-900 border-t border-[#a7f3d0]">
+                            <td className="px-4 py-2.5 uppercase text-[11px] text-[#065f46]">
+                              TOTAL {group.label}
+                            </td>
+                            <td className="px-4 py-2.5 text-right">{Math.round(group.totals.opening)}</td>
+                            <td className="px-4 py-2.5 text-right">{Math.round(group.totals.inward)}</td>
+                            <td className="px-4 py-2.5 text-right">{Math.round(group.totals.consumption)}</td>
+                            {isRaw ? (
+                              <>
+                                <td className="px-4 py-2.5 text-right"></td>
+                                <td className="px-4 py-2.5 text-right"></td>
+                                <td className="px-4 py-2.5 text-right">{Math.round(group.totals.fines3Qty)}</td>
+                                <td className="px-4 py-2.5 text-right">{Math.round(group.totals.production)}</td>
+                                <td className="px-4 py-2.5 text-right">{Math.round(group.totals.dispatch)}</td>
+                              </>
+                            ) : (
+                              <>
+                                <td className="px-4 py-2.5 text-right"></td>
+                                <td className="px-4 py-2.5 text-right"></td>
+                                <td className="px-4 py-2.5 text-right">{Math.round(group.totals.landedCost)}</td>
+                                <td className="px-4 py-2.5 text-right">{Math.round(group.totals.dispatch)}</td>
+                              </>
+                            )}
+                            <td className="px-4 py-2.5 text-right font-bold text-[#065f46]">{Math.round(group.totals.closing)}</td>
+                          </tr>
+                        </React.Fragment>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
 
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -1343,8 +1671,8 @@ const Stock = () => {
                   return (
                     <React.Fragment key={categoryKey}>
                       {/* 1. CATEGORY MAIN HEADER */}
-                      <tr className="bg-indigo-50/50 border-y border-indigo-100">
-                        <td colSpan={activeTab === 'raw_material' ? "12" : "11"} className="px-6 py-4 font-bold text-slate-800 text-xs uppercase tracking-widest text-indigo-700">
+                      <tr className="bg-slate-100/80 border-y border-slate-200">
+                        <td colSpan={activeTab === 'raw_material' ? "12" : "11"} className="px-6 py-3.5 text-center font-extrabold text-slate-900 text-xs sm:text-sm uppercase tracking-wider">
                           {group.label}
                         </td>
                       </tr>
@@ -1458,28 +1786,6 @@ const Stock = () => {
                         <td className="px-4 py-4 text-center"></td>
                       </tr>
 
-                      {/* Verification Row */}
-                      {(() => {
-                        let expectedClosing = 0;
-                        if (activeTab === 'raw_material') {
-                          expectedClosing = group.totals.opening + group.totals.inward - group.totals.consumption - group.totals.fines3Qty + group.totals.production - group.totals.dispatch;
-                        } else {
-                          expectedClosing = group.totals.opening + group.totals.inward - group.totals.consumption - group.totals.moistLossQty - group.totals.dispatch;
-                        }
-                        const isCorrect = Math.abs(expectedClosing - group.totals.closing) < 0.001;
-                        const colSpan1 = activeTab === 'raw_material' ? 9 : 8;
-                        return (
-                          <tr className={isCorrect ? "bg-emerald-50/40" : "bg-rose-50/40"}>
-                            <td colSpan={colSpan1} className={`px-4 py-1.5 text-right text-[10px] font-semibold italic ${isCorrect ? 'text-emerald-600' : 'text-rose-600'}`}>
-                              {isCorrect ? 'Calculation Verified' : 'Calculation Mismatch'}
-                            </td>
-                            <td className={`px-4 py-1.5 text-right font-bold text-[10px] ${isCorrect ? 'text-emerald-700 bg-emerald-100/50' : 'text-rose-600 bg-rose-100/50'}`}>
-                              {isCorrect ? 'Correct' : `Expected: ${formatNumber(expectedClosing)}`}
-                            </td>
-                            <td colSpan="2" className="px-4 py-1.5 text-center"></td>
-                          </tr>
-                        );
-                      })()}
                     </React.Fragment>
                   )
                 })

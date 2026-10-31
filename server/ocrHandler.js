@@ -52,17 +52,25 @@ async function callModel({ key, model, name, schema, system, userText, image, ef
   return JSON.parse(msg?.content || '{}')
 }
 
-const EXTRACT_SYSTEM = `You read photos/scans of plant paperwork and return the data as JSON.
-Rules:
-- Copy values exactly as printed. Never calculate, estimate or "fix" numbers. Copy names letter by letter, keep original spelling.
-- If a cell is blank, illegible or you are not sure, return "" for it. Do not guess digits.
-- Keep the original row order. Skip TOTAL / SUB TOTAL rows and column headers.
-- Numeric cells contain ONLY digits and one optional decimal point: remove thousands commas, units (Mt, FC), currency and symbols (@, /-, *). Keep a trailing % only for percentage cells.
-- Dates: YYYY-MM-DD (dd.mm.yy means day.month.year).`
+const EXTRACT_SYSTEM = `You are an ultra-precise, verbatim OCR engine reading documents, registers, and plant paperwork.
+Strict Extraction Rules:
+- ZERO HALLUCINATION & ZERO INVENTED WORDS: Do NOT add, extrapolate, infer, assume, or modify any words, letters, digits, or characters. Extract ONLY and EXACTLY what is physically written/printed on the image.
+- EXACT VERBATIM COPY: Copy every word, name, item description, and note character-by-character, letter-by-letter. Maintain exact spelling, capitalization, and punctuation as visible.
+- NUMERICAL VALUES: Copy digits exactly as printed. Never calculate, estimate, round, or "fix" numbers or totals.
+  - If a cell contains digits, extract only the exact digits with its optional decimal point (remove commas, currency symbols like Rs/@/-, units like MT/FC).
+  - Keep a trailing '%' only if it is explicitly a percentage cell.
+- BLANK OR ILLEGIBLE CELLS: If a cell is blank, empty, unreadable, cut off, or missing in the image, return "" (empty string). NEVER make up or guess any digits or text.
+- ROW INTEGRITY & ORDER: Maintain the exact sequential row order of the physical sheet. Skip header rows and TOTAL/SUB-TOTAL/GRAND TOTAL summary rows.
+- DATES: Convert visible printed dates to YYYY-MM-DD format (dd.mm.yy means day.month.year). If not present, return "".`
 
-const VERIFY_SYSTEM = `You are a careful checker. You get an image and data another reader extracted from it.
-Compare every value against the image, digit by digit: watch for dropped or extra digits in long numbers. Change a value ONLY if you are CERTAIN the image shows something different (a wrong digit, wrong row/column, missed or extra row). Do NOT reformat, normalise, re-space or "improve" text or numbers; the cleaning rules (numbers only, no units/symbols, dates YYYY-MM-DD) must be preserved.
-If unsure, leave the value as is. Return the full data in "data" and one "corrections" entry per value you changed.`
+const VERIFY_SYSTEM = `You are a strict, forensic quality-control checker for OCR data against an original document image.
+Verification Rules:
+- Compare every single value against the image character-by-character and digit-by-digit.
+- Watch for dropped, misread, or hallucinated characters/words/digits.
+- Change a value ONLY if you are 100% CERTAIN the image shows something different (a wrong character, wrong digit, mismatched column, or missed row).
+- NEVER add words, descriptions, or commentary that do not exist in the source image.
+- If unsure or if a field is blank/illegible, leave it as is or as "".
+- Return the exact verified data in "data" and list any genuine fixes in "corrections".`
 
 const verifySchema = (dataSchema) => ({
   type: 'object',

@@ -42,19 +42,48 @@ const MisReport = () => {
   const [saudaSaleEntries, setSaudaSaleEntries] = useState([])
   const [saudaPurchaseEntries, setSaudaPurchaseEntries] = useState([])
 
+  const [productionList, setProductionList] = useState([])
+  const production2FilesData = useProduction2Store(state => state.filesData)
+
   useEffect(() => {
     const fetchData = () => {
+      // Helper to check if item matches the selected reportDate (e.g. "2026-10-31")
+      const matchesDate = (item) => {
+        // 1. Check explicit report_date
+        if (item.report_date && item.report_date === reportDate) return true
+
+        // 2. Check item.date (can be YYYY-MM-DD or DD/MM/YYYY or DD.MM.YYYY)
+        if (item.date) {
+          if (item.date === reportDate) return true
+          // Try converting DD/MM/YYYY or DD.MM.YYYY or DD-MM-YYYY to YYYY-MM-DD
+          const parts = String(item.date).split(/[.\-\/]/)
+          if (parts.length === 3) {
+            const d = parts[0].padStart(2, '0')
+            const m = parts[1].padStart(2, '0')
+            let y = parts[2]
+            if (y.length === 2) y = '20' + y
+            if (`${y}-${m}-${d}` === reportDate) return true
+          }
+        }
+
+        // 3. Check created_at (when the entry was saved to LocalStorage)
+        if (item.created_at) {
+          const isoDay = String(item.created_at).substring(0, 10)
+          if (isoDay === reportDate) return true
+          try {
+            const localDay = new Date(item.created_at).toLocaleDateString('en-CA')
+            if (localDay === reportDate) return true
+          } catch (e) {}
+        }
+
+        return false
+      }
+
       // Fetch Raw Material Stock
-      const rawData = localDb.select('raw_material_stock', (item) => {
-        if (!item.created_at) return false
-        return item.created_at >= `${reportDate}T00:00:00` && item.created_at <= `${reportDate}T23:59:59`
-      })
+      const rawData = localDb.select('raw_material_stock', matchesDate)
 
       // Fetch Coal Stock
-      const coalData = localDb.select('coal_stock', (item) => {
-        if (!item.created_at) return false
-        return item.created_at >= `${reportDate}T00:00:00` && item.created_at <= `${reportDate}T23:59:59`
-      })
+      const coalData = localDb.select('coal_stock', matchesDate)
 
       let mappedStocks = []
       if (rawData && rawData.length > 0) {
@@ -76,10 +105,7 @@ const MisReport = () => {
       setStockItems(mappedStocks)
 
       // Fetch item transfers
-      const transfers = localDb.select('item_transfers', (item) => {
-        if (!item.created_at) return false
-        return item.created_at >= `${reportDate}T00:00:00` && item.created_at <= `${reportDate}T23:59:59`
-      })
+      const transfers = localDb.select('item_transfers', matchesDate)
 
       if (transfers && transfers.length > 0) {
         const incoming = transfers.filter(d => d.entry_type === 'incoming').map(item => ({
@@ -105,30 +131,40 @@ const MisReport = () => {
         setOutgoingList([])
       }
 
-      // Fetch Sauda Sale
-      const saleData = localDb.select('sauda_sale')
-      if (saleData) {
+      // Fetch Sauda Sale filtered by reportDate
+      const saleData = localDb.select('sauda_sale', matchesDate)
+      if (saleData && saleData.length > 0) {
         setSaudaSaleEntries(saleData.map(item => ({
           mainHeading: item.main_heading,
           itemName: item.item_name,
           balPending: item.bal_pending
         })))
+      } else {
+        setSaudaSaleEntries([])
       }
 
-      // Fetch Sauda Purchase
-      const purchaseData = localDb.select('sauda_purchase')
-      if (purchaseData) {
+      // Fetch Sauda Purchase filtered by reportDate
+      const purchaseData = localDb.select('sauda_purchase', matchesDate)
+      if (purchaseData && purchaseData.length > 0) {
         setSaudaPurchaseEntries(purchaseData.map(item => ({
           mainHeading: item.main_heading,
           itemName: item.item_name,
           balPending: item.bal_pending
         })))
+      } else {
+        setSaudaPurchaseEntries([])
+      }
+
+      // Fetch Production 2 filtered by reportDate
+      const prodData = localDb.select('production2', matchesDate)
+      if (prodData && prodData.length > 0) {
+        setProductionList(prodData)
+      } else {
+        setProductionList([])
       }
     }
     fetchData()
   }, [reportDate])
-
-  const production2FilesData = useProduction2Store(state => state.filesData)
 
   // 1. STOCK AGGREGATION — split into Raw Material and Coal Detail
   const rawMaterialSummary = useMemo(() => {
@@ -219,9 +255,9 @@ const MisReport = () => {
       '"B" GRADE': { k1: 0, k2: 0, total: 0, percent: null },
     }
 
-    production2FilesData.forEach(f => {
-      f.items.forEach(item => {
-        const label = item.label.toUpperCase().trim()
+    if (productionList && productionList.length > 0) {
+      productionList.forEach(item => {
+        const label = (item.item_grade || '').toUpperCase().trim()
         let gradeKey = null
         if (label.includes('"A" GRADE')) gradeKey = '"A" GRADE'
         else if (label.includes('"B" GRADE')) gradeKey = '"B" GRADE'
@@ -230,13 +266,32 @@ const MisReport = () => {
           rawData[gradeKey].k1 += Number(item.kiln1) || 0
           rawData[gradeKey].k2 += Number(item.kiln2) || 0
           rawData[gradeKey].total += Number(item.total) || 0
-          // Use most recent percent (overwrite each file so last file wins)
           if (item.percent !== null && item.percent !== undefined) {
             rawData[gradeKey].percent = item.percent
           }
         }
       })
-    })
+    } else {
+      // Fallback to store only if date matches reportDate
+      const activeFiles = (production2FilesData || []).filter(f => !f.date || f.date === reportDate)
+      activeFiles.forEach(f => {
+        f.items.forEach(item => {
+          const label = item.label.toUpperCase().trim()
+          let gradeKey = null
+          if (label.includes('"A" GRADE')) gradeKey = '"A" GRADE'
+          else if (label.includes('"B" GRADE')) gradeKey = '"B" GRADE'
+
+          if (gradeKey) {
+            rawData[gradeKey].k1 += Number(item.kiln1) || 0
+            rawData[gradeKey].k2 += Number(item.kiln2) || 0
+            rawData[gradeKey].total += Number(item.total) || 0
+            if (item.percent !== null && item.percent !== undefined) {
+              rawData[gradeKey].percent = item.percent
+            }
+          }
+        })
+      })
+    }
 
     // Build final summary with dynamic percentage label
     const summary = {}
@@ -249,7 +304,7 @@ const MisReport = () => {
     })
 
     return summary
-  }, [production2FilesData])
+  }, [productionList, production2FilesData, reportDate])
 
   // Calculate totals for production
   const prodTotalK1 = Object.values(productionSummary).reduce((sum, val) => sum + val.k1, 0)
@@ -409,22 +464,68 @@ const MisReport = () => {
     <div className="space-y-6 pb-12 px-2 sm:px-4 max-w-[1200px] mx-auto text-slate-800">
       <style>{`
         @media print {
-          @page { margin: 8mm; size: A4 portrait; }
-          body { 
+          @page { 
+            margin: 2mm 3mm; 
+            size: A4 portrait; 
+          }
+          *, *::before, *::after {
+            box-sizing: border-box !important;
+          }
+          html, body { 
             -webkit-print-color-adjust: exact !important; 
             print-color-adjust: exact !important; 
             background: #ffffff !important;
-          }
-          table { 
-            font-size: 11px !important; 
+            margin: 0 !important;
+            padding: 0 !important;
+            height: auto !important;
             width: 100% !important;
           }
-          td, th { 
-            padding-top: 3px !important; 
-            padding-bottom: 3px !important; 
-          }
-          .no-print {
+          .print\\:hidden, .no-print {
             display: none !important;
+          }
+          .print-container {
+            padding: 0 !important;
+            margin: 0 !important;
+            border: none !important;
+            box-shadow: none !important;
+            width: 100% !important;
+            transform: scale(0.85);
+            transform-origin: top center;
+            page-break-inside: avoid !important;
+            break-inside: avoid !important;
+          }
+          table { 
+            font-size: 8pt !important; 
+            line-height: 1.1 !important;
+            width: 100% !important;
+            font-weight: 700 !important;
+            border-collapse: collapse !important;
+            page-break-inside: avoid !important;
+            break-inside: avoid !important;
+          }
+          thead {
+            display: table-row-group !important; /* Prevents repeating header on accidental page 2 */
+          }
+          tr {
+            page-break-inside: avoid !important;
+            break-inside: avoid !important;
+          }
+          td, th { 
+            padding: 1.5px 3px !important; 
+            font-weight: 700 !important;
+          }
+          .print-header-title {
+            font-size: 13pt !important;
+            padding: 3px 6px !important;
+          }
+          .print-header-date {
+            font-size: 10pt !important;
+            padding: 3px 6px !important;
+          }
+          .print-notes-cell {
+            min-height: 25px !important;
+            height: 25px !important;
+            padding: 2px 4px !important;
           }
         }
       `}</style>
@@ -544,16 +645,16 @@ const MisReport = () => {
       </div>
 
       {/* The Report (Printable Area Wrapper with Premium Executive Styling) */}
-      <div className="bg-white rounded-2xl shadow-xl border border-slate-200 p-3 sm:p-8 print:p-0 print:border-none print:shadow-none" ref={reportRef}>
-        <table className="w-full border-collapse border border-slate-500 text-[13px] sm:text-xs print:text-[10px] text-slate-900 bg-white">
+      <div className="print-container bg-white rounded-2xl shadow-xl border border-slate-200 p-3 sm:p-8 print:p-0 print:border-none print:shadow-none" ref={reportRef}>
+        <table className="w-full border-collapse border border-slate-500 text-[13px] sm:text-xs print:text-[10px] text-slate-950 font-bold bg-white">
           
           {/* Main Header */}
           <thead>
             <tr>
-              <th contentEditable suppressContentEditableWarning colSpan="2" className="bg-[#1e3a8a] text-white py-3.5 px-4 text-center font-black text-xl sm:text-2xl border border-slate-600 uppercase tracking-wider">
+              <th contentEditable suppressContentEditableWarning colSpan="2" className="print-header-title bg-[#1e3a8a] text-white py-3.5 px-4 text-center font-black text-xl sm:text-2xl border border-slate-600 uppercase tracking-wider">
                 NANDAN SMELTERS REPORT
               </th>
-              <th contentEditable suppressContentEditableWarning className="bg-[#1e3a8a] text-white py-3.5 px-3 text-center font-bold text-base sm:text-lg border border-slate-600 w-[180px]">
+              <th contentEditable suppressContentEditableWarning className="print-header-date bg-[#1e3a8a] text-white py-3.5 px-3 text-center font-bold text-base sm:text-lg border border-slate-600 w-[180px]">
                 {formattedDate}
               </th>
             </tr>
@@ -566,15 +667,15 @@ const MisReport = () => {
                 {orderedRawStock.map(([material, qty], idx) => (
                   <tr key={`rawstock-${material}`} className="group cursor-move hover:bg-blue-50/40 transition-colors" draggable onDragStart={(e) => handleDragStart(e, idx, 'rawstock')} onDragOver={handleDragOver} onDrop={(e) => handleDrop(e, idx, 'rawstock', orderedRawStock, setOrderedRawStock)}>
                     {idx === 0 && (
-                      <td contentEditable suppressContentEditableWarning rowSpan={orderedRawStock.length} className="font-extrabold border border-slate-500 p-2 align-top w-[140px] bg-slate-50/70 text-slate-900 uppercase tracking-wide">
+                      <td contentEditable suppressContentEditableWarning rowSpan={orderedRawStock.length} className="font-extrabold border border-slate-500 p-2 align-top w-[140px] bg-slate-50/70 text-slate-950 uppercase tracking-wide">
                         RAW MATERIAL STOCK
                       </td>
                     )}
-                    <td contentEditable suppressContentEditableWarning className="font-semibold border border-slate-500 p-2 relative text-slate-800">
+                    <td contentEditable suppressContentEditableWarning className="font-bold border border-slate-500 p-2 relative text-slate-900 uppercase">
                       <HideButton rowKey={`rawstock-${material}`} />
                       {material}
                     </td>
-                    <td contentEditable suppressContentEditableWarning className="font-bold border border-slate-500 p-2 text-right font-mono text-slate-900">{formatNumber(qty)}</td>
+                    <td contentEditable suppressContentEditableWarning className="font-extrabold border border-slate-500 p-2 text-right font-mono text-slate-950 text-sm">{formatNumber(qty)}</td>
                   </tr>
                 ))}
               </>
@@ -592,15 +693,15 @@ const MisReport = () => {
                 {orderedCoalStock.map(([material, qty], idx) => (
                   <tr key={`coalstock-${material}`} className="group cursor-move hover:bg-blue-50/40 transition-colors" draggable onDragStart={(e) => handleDragStart(e, idx, 'coalstock')} onDragOver={handleDragOver} onDrop={(e) => handleDrop(e, idx, 'coalstock', orderedCoalStock, setOrderedCoalStock)}>
                     {idx === 0 && (
-                      <td contentEditable suppressContentEditableWarning rowSpan={orderedCoalStock.length} className="font-extrabold border border-slate-500 p-2 align-top w-[140px] bg-slate-50/70 text-slate-900 uppercase tracking-wide">
+                      <td contentEditable suppressContentEditableWarning rowSpan={orderedCoalStock.length} className="font-extrabold border border-slate-500 p-2 align-top w-[140px] bg-slate-50/70 text-slate-950 uppercase tracking-wide">
                         COAL STOCK
                       </td>
                     )}
-                    <td contentEditable suppressContentEditableWarning className="font-semibold border border-slate-500 p-2 relative text-slate-800">
+                    <td contentEditable suppressContentEditableWarning className="font-bold border border-slate-500 p-2 relative text-slate-900 uppercase">
                       <HideButton rowKey={`coalstock-${material}`} />
                       {material}
                     </td>
-                    <td contentEditable suppressContentEditableWarning className="font-bold border border-slate-500 p-2 text-right font-mono text-slate-900">{formatNumber(qty)}</td>
+                    <td contentEditable suppressContentEditableWarning className="font-extrabold border border-slate-500 p-2 text-right font-mono text-slate-950 text-sm">{formatNumber(qty)}</td>
                   </tr>
                 ))}
               </>
@@ -624,26 +725,26 @@ const MisReport = () => {
                   <table className="w-full border-collapse table-fixed">
                     <thead>
                       <tr className="bg-slate-100">
-                        <th contentEditable suppressContentEditableWarning className="border-b-[2px] border-r border-slate-500 font-extrabold p-1.5 text-center text-slate-700 w-[55px]">S.No</th>
-                        <th contentEditable suppressContentEditableWarning className="border-b-[2px] border-r border-slate-500 font-extrabold p-1.5 text-left text-slate-700">Party Name</th>
-                        <th contentEditable suppressContentEditableWarning className="border-b-[2px] border-r border-slate-500 font-extrabold p-1.5 text-left text-slate-700">Material Name</th>
-                        <th contentEditable suppressContentEditableWarning className="border-b-[2px] border-r border-slate-500 font-extrabold p-1.5 text-center text-slate-700 w-[125px]">Vehicle No</th>
-                        <th contentEditable suppressContentEditableWarning className="border-b-[2px] border-r border-slate-500 font-extrabold p-1.5 text-center text-slate-700 w-[120px]">Qty.</th>
-                        <th contentEditable suppressContentEditableWarning className="border-b border-slate-500 font-extrabold p-1.5 text-center text-slate-700 w-[120px]">RATE 18 %</th>
+                        <th contentEditable suppressContentEditableWarning className="border-b-[2px] border-r border-slate-500 font-extrabold p-1.5 text-center text-slate-900 w-[55px]">S.No</th>
+                        <th contentEditable suppressContentEditableWarning className="border-b-[2px] border-r border-slate-500 font-extrabold p-1.5 text-left text-slate-900">Party Name</th>
+                        <th contentEditable suppressContentEditableWarning className="border-b-[2px] border-r border-slate-500 font-extrabold p-1.5 text-left text-slate-900">Material Name</th>
+                        <th contentEditable suppressContentEditableWarning className="border-b-[2px] border-r border-slate-500 font-extrabold p-1.5 text-center text-slate-900 w-[125px]">Vehicle No</th>
+                        <th contentEditable suppressContentEditableWarning className="border-b-[2px] border-r border-slate-500 font-extrabold p-1.5 text-center text-slate-900 w-[120px]">Qty.</th>
+                        <th contentEditable suppressContentEditableWarning className="border-b border-slate-500 font-extrabold p-1.5 text-center text-slate-900 w-[120px]">RATE 18 %</th>
                       </tr>
                     </thead>
                     <tbody>
                       {orderedIncoming.map((item, idx) => (
                         <tr key={`inc-${item.id || idx}`} className="border-b border-slate-500 last:border-b-0 hover:bg-indigo-50/40 transition-colors group cursor-move" draggable onDragStart={(e) => handleDragStart(e, idx, 'incoming')} onDragOver={handleDragOver} onDrop={(e) => handleDrop(e, idx, 'incoming', orderedIncoming, setOrderedIncoming)}>
-                          <td contentEditable suppressContentEditableWarning className="border-r border-slate-500 p-1.5 text-center font-bold relative text-slate-700">
+                          <td contentEditable suppressContentEditableWarning className="border-r border-slate-500 p-1.5 text-center font-extrabold relative text-slate-900">
                             <HideButton rowKey={`inc-${item.id || idx}`} />
                             {idx + 1}
                           </td>
-                          <td contentEditable suppressContentEditableWarning className="border-r border-slate-500 p-1.5 font-semibold text-slate-800">{item.partyName}</td>
-                          <td contentEditable suppressContentEditableWarning className="border-r border-slate-500 p-1.5 font-semibold text-slate-800">{item.materialName}</td>
-                          <td contentEditable suppressContentEditableWarning className="border-r border-slate-500 p-1.5 text-center font-mono font-medium text-slate-700">{item.vehicleNo}</td>
-                          <td contentEditable suppressContentEditableWarning className="border-r border-slate-500 p-1.5 text-center font-bold font-mono text-slate-900">{formatNumber(item.qty)}</td>
-                          <td contentEditable suppressContentEditableWarning className="p-1.5 text-center font-mono font-semibold text-slate-800">{item.rate || '0'}</td>
+                          <td contentEditable suppressContentEditableWarning className="border-r border-slate-500 p-1.5 font-bold text-slate-900 uppercase">{item.partyName}</td>
+                          <td contentEditable suppressContentEditableWarning className="border-r border-slate-500 p-1.5 font-bold text-slate-900 uppercase">{item.materialName}</td>
+                          <td contentEditable suppressContentEditableWarning className="border-r border-slate-500 p-1.5 text-center font-mono font-bold text-slate-900 uppercase">{item.vehicleNo}</td>
+                          <td contentEditable suppressContentEditableWarning className="border-r border-slate-500 p-1.5 text-center font-extrabold font-mono text-slate-950 text-sm">{formatNumber(item.qty)}</td>
+                          <td contentEditable suppressContentEditableWarning className="p-1.5 text-center font-mono font-extrabold text-slate-950 text-sm">{item.rate || '0'}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -666,26 +767,26 @@ const MisReport = () => {
                   <table className="w-full border-collapse table-fixed">
                     <thead>
                       <tr className="bg-slate-100">
-                        <th contentEditable suppressContentEditableWarning className="border-b-[2px] border-r border-slate-500 font-extrabold p-1.5 text-center text-slate-700 w-[55px]">S.No</th>
-                        <th contentEditable suppressContentEditableWarning className="border-b-[2px] border-r border-slate-500 font-extrabold p-1.5 text-left text-slate-700">Party Name</th>
-                        <th contentEditable suppressContentEditableWarning className="border-b-[2px] border-r border-slate-500 font-extrabold p-1.5 text-left text-slate-700">Material Name</th>
-                        <th contentEditable suppressContentEditableWarning className="border-b-[2px] border-r border-slate-500 font-extrabold p-1.5 text-center text-slate-700 w-[125px]">Vehicle No</th>
-                        <th contentEditable suppressContentEditableWarning className="border-b-[2px] border-r border-slate-500 font-extrabold p-1.5 text-center text-slate-700 w-[120px]">Qty.</th>
-                        <th contentEditable suppressContentEditableWarning className="border-b border-slate-500 font-extrabold p-1.5 text-center text-slate-700 w-[120px]">RATE 18 %</th>
+                        <th contentEditable suppressContentEditableWarning className="border-b-[2px] border-r border-slate-500 font-extrabold p-1.5 text-center text-slate-900 w-[55px]">S.No</th>
+                        <th contentEditable suppressContentEditableWarning className="border-b-[2px] border-r border-slate-500 font-extrabold p-1.5 text-left text-slate-900">Party Name</th>
+                        <th contentEditable suppressContentEditableWarning className="border-b-[2px] border-r border-slate-500 font-extrabold p-1.5 text-left text-slate-900">Material Name</th>
+                        <th contentEditable suppressContentEditableWarning className="border-b-[2px] border-r border-slate-500 font-extrabold p-1.5 text-center text-slate-900 w-[125px]">Vehicle No</th>
+                        <th contentEditable suppressContentEditableWarning className="border-b-[2px] border-r border-slate-500 font-extrabold p-1.5 text-center text-slate-900 w-[120px]">Qty.</th>
+                        <th contentEditable suppressContentEditableWarning className="border-b border-slate-500 font-extrabold p-1.5 text-center text-slate-900 w-[120px]">RATE 18 %</th>
                       </tr>
                     </thead>
                     <tbody>
                       {orderedOutgoing.map((item, idx) => (
                         <tr key={`out-${item.id || idx}`} className="border-b border-slate-500 last:border-b-0 hover:bg-indigo-50/40 transition-colors group cursor-move" draggable onDragStart={(e) => handleDragStart(e, idx, 'outgoing')} onDragOver={handleDragOver} onDrop={(e) => handleDrop(e, idx, 'outgoing', orderedOutgoing, setOrderedOutgoing)}>
-                          <td contentEditable suppressContentEditableWarning className="border-r border-slate-500 p-1.5 text-center font-bold relative text-slate-700">
+                          <td contentEditable suppressContentEditableWarning className="border-r border-slate-500 p-1.5 text-center font-extrabold relative text-slate-900">
                             <HideButton rowKey={`out-${item.id || idx}`} />
                             {idx + 1}
                           </td>
-                          <td contentEditable suppressContentEditableWarning className="border-r border-slate-500 p-1.5 font-semibold text-slate-800">{item.partyName}</td>
-                          <td contentEditable suppressContentEditableWarning className="border-r border-slate-500 p-1.5 font-semibold text-slate-800">{item.materialName}</td>
-                          <td contentEditable suppressContentEditableWarning className="border-r border-slate-500 p-1.5 text-center font-mono font-medium text-slate-700">{item.vehicleNo}</td>
-                          <td contentEditable suppressContentEditableWarning className="border-r border-slate-500 p-1.5 text-center font-bold font-mono text-slate-900">{formatNumber(item.qty)}</td>
-                          <td contentEditable suppressContentEditableWarning className="p-1.5 text-center font-mono font-semibold text-slate-800">{item.rate || '0'}</td>
+                          <td contentEditable suppressContentEditableWarning className="border-r border-slate-500 p-1.5 font-bold text-slate-900 uppercase">{item.partyName}</td>
+                          <td contentEditable suppressContentEditableWarning className="border-r border-slate-500 p-1.5 font-bold text-slate-900 uppercase">{item.materialName}</td>
+                          <td contentEditable suppressContentEditableWarning className="border-r border-slate-500 p-1.5 text-center font-mono font-bold text-slate-900 uppercase">{item.vehicleNo}</td>
+                          <td contentEditable suppressContentEditableWarning className="border-r border-slate-500 p-1.5 text-center font-extrabold font-mono text-slate-950 text-sm">{formatNumber(item.qty)}</td>
+                          <td contentEditable suppressContentEditableWarning className="p-1.5 text-center font-mono font-extrabold text-slate-950 text-sm">{item.rate || '0'}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -708,40 +809,40 @@ const MisReport = () => {
                   <table className="w-full border-collapse table-fixed">
                     <thead>
                       <tr className="bg-slate-100">
-                        <th contentEditable suppressContentEditableWarning className="border-b-[2px] border-r border-slate-500 font-extrabold p-1.5 text-center text-slate-700">GRADE</th>
-                        <th contentEditable suppressContentEditableWarning className="border-b-[2px] border-r border-slate-500 font-extrabold p-1.5 text-center w-[120px] text-slate-700">KILN 1</th>
-                        <th contentEditable suppressContentEditableWarning className="border-b-[2px] border-r border-slate-500 font-extrabold p-1.5 text-center w-[120px] text-slate-700">KILN 2</th>
-                        <th contentEditable suppressContentEditableWarning className="border-b border-slate-500 font-extrabold p-1.5 text-center w-[120px] text-slate-700">TOTAL</th>
+                        <th contentEditable suppressContentEditableWarning className="border-b-[2px] border-r border-slate-500 font-extrabold p-1.5 text-center text-slate-900">GRADE</th>
+                        <th contentEditable suppressContentEditableWarning className="border-b-[2px] border-r border-slate-500 font-extrabold p-1.5 text-center w-[120px] text-slate-900">KILN 1</th>
+                        <th contentEditable suppressContentEditableWarning className="border-b-[2px] border-r border-slate-500 font-extrabold p-1.5 text-center w-[120px] text-slate-900">KILN 2</th>
+                        <th contentEditable suppressContentEditableWarning className="border-b border-slate-500 font-extrabold p-1.5 text-center w-[120px] text-slate-900">TOTAL</th>
                       </tr>
                     </thead>
                     <tbody>
                       {orderedProduction.map(([metric, values], idx) => (
                         <tr key={`prod-${metric}`} className="group cursor-move hover:bg-indigo-50/40 transition-colors" draggable onDragStart={(e) => handleDragStart(e, idx, 'production')} onDragOver={handleDragOver} onDrop={(e) => handleDrop(e, idx, 'production', orderedProduction, setOrderedProduction)}>
-                          <td contentEditable suppressContentEditableWarning className="border-r border-slate-500 font-bold p-1.5 uppercase relative text-slate-800">
+                          <td contentEditable suppressContentEditableWarning className="border-r border-slate-500 font-bold p-1.5 uppercase relative text-slate-900">
                             <HideButton rowKey={`prod-${metric}`} />
                             {metric}
                           </td>
-                          <td contentEditable suppressContentEditableWarning className="border-r border-slate-500 font-bold p-1.5 text-center font-mono text-slate-900">{formatNumber(values.k1)}</td>
-                          <td contentEditable suppressContentEditableWarning className="border-r border-slate-500 font-bold p-1.5 text-center font-mono text-slate-900">{formatNumber(values.k2)}</td>
-                          <td contentEditable suppressContentEditableWarning className="font-bold p-1.5 text-center font-mono text-slate-900">
+                          <td contentEditable suppressContentEditableWarning className="border-r border-slate-500 font-extrabold p-1.5 text-center font-mono text-slate-950 text-sm">{formatNumber(values.k1)}</td>
+                          <td contentEditable suppressContentEditableWarning className="border-r border-slate-500 font-extrabold p-1.5 text-center font-mono text-slate-950 text-sm">{formatNumber(values.k2)}</td>
+                          <td contentEditable suppressContentEditableWarning className="font-extrabold p-1.5 text-center font-mono text-slate-950 text-sm">
                             <div>{formatNumber(values.total)}</div>
-                            {metric.includes('"A" GRADE') && <div className="text-[9px] text-slate-500 font-normal uppercase mt-0.5">A GRADE TOTAL</div>}
-                            {metric.includes('"B" GRADE') && <div className="text-[9px] text-slate-500 font-normal uppercase mt-0.5">B GRADE TOTAL</div>}
+                            {metric.includes('"A" GRADE') && <div className="text-[9px] text-slate-600 font-bold uppercase mt-0.5">A GRADE TOTAL</div>}
+                            {metric.includes('"B" GRADE') && <div className="text-[9px] text-slate-600 font-bold uppercase mt-0.5">B GRADE TOTAL</div>}
                           </td>
                         </tr>
                       ))}
                       {/* Sub-total for production */}
                       <tr className="bg-[#cbd5e1] font-bold" style={{ breakInside: 'avoid', pageBreakInside: 'avoid' }}>
-                        <td contentEditable suppressContentEditableWarning className="border-t-[2px] border-r border-slate-500 font-black py-2.5 px-2 text-center uppercase text-slate-900 tracking-wider">SPONGE TOTAL</td>
-                        <td contentEditable suppressContentEditableWarning className="border-t-[2px] border-r border-slate-500 font-bold py-2.5 px-1 text-center font-mono">
-                          <div className="text-[9px] text-slate-600 font-bold uppercase leading-tight">KILN-1 TOTAL</div>
+                        <td contentEditable suppressContentEditableWarning className="border-t-[2px] border-r border-slate-500 font-black py-2.5 px-2 text-center uppercase text-slate-950 tracking-wider">SPONGE TOTAL</td>
+                        <td contentEditable suppressContentEditableWarning className="border-t-[2px] border-r border-slate-500 font-extrabold py-2.5 px-1 text-center font-mono text-slate-950">
+                          <div className="text-[9px] text-slate-700 font-black uppercase leading-tight">KILN-1 TOTAL</div>
                           {formatNumber(prodTotalK1Filtered)}
                         </td>
-                        <td contentEditable suppressContentEditableWarning className="border-t-[2px] border-r border-slate-500 font-bold py-2.5 px-1 text-center font-mono">
-                          <div className="text-[9px] text-slate-600 font-bold uppercase leading-tight">KILN-2 TOTAL</div>
+                        <td contentEditable suppressContentEditableWarning className="border-t-[2px] border-r border-slate-500 font-extrabold py-2.5 px-1 text-center font-mono text-slate-950">
+                          <div className="text-[9px] text-slate-700 font-black uppercase leading-tight">KILN-2 TOTAL</div>
                           {formatNumber(prodTotalK2Filtered)}
                         </td>
-                        <td contentEditable suppressContentEditableWarning className="border-t-[2px] border-slate-500 font-extrabold py-2.5 px-1 text-center font-mono text-base text-slate-950">
+                        <td contentEditable suppressContentEditableWarning className="border-t-[2px] border-slate-500 font-black py-2.5 px-1 text-center font-mono text-base text-slate-950">
                           {formatNumber(prodTotalAllFiltered)}
                         </td>
                       </tr>
@@ -760,18 +861,18 @@ const MisReport = () => {
               </td>
             </tr>
             <tr className="bg-slate-100">
-              <th contentEditable suppressContentEditableWarning className="text-slate-700 font-extrabold text-center p-1.5 border border-slate-500 uppercase tracking-wide w-[140px]">TYPE</th>
-              <th contentEditable suppressContentEditableWarning className="text-slate-700 font-extrabold text-center p-1.5 border border-slate-500 uppercase tracking-wide">ITEM'S</th>
-              <th contentEditable suppressContentEditableWarning className="text-slate-700 font-extrabold text-center p-1.5 border border-slate-500 uppercase tracking-wide w-[180px]">BAL. PENDING</th>
+              <th contentEditable suppressContentEditableWarning className="text-slate-900 font-extrabold text-center p-1.5 border border-slate-500 uppercase tracking-wide w-[140px]">TYPE</th>
+              <th contentEditable suppressContentEditableWarning className="text-slate-900 font-extrabold text-center p-1.5 border border-slate-500 uppercase tracking-wide">ITEM'S</th>
+              <th contentEditable suppressContentEditableWarning className="text-slate-900 font-extrabold text-center p-1.5 border border-slate-500 uppercase tracking-wide w-[180px]">BAL. PENDING</th>
             </tr>
             {orderedSaudaSale.map((item, idx) => (
               <tr key={`sale-${item.itemName || idx}`} className="group cursor-move hover:bg-indigo-50/40 transition-colors" draggable onDragStart={(e) => handleDragStart(e, idx, 'saudaSale')} onDragOver={handleDragOver} onDrop={(e) => handleDrop(e, idx, 'saudaSale', orderedSaudaSale, setOrderedSaudaSale)}>
-                {idx === 0 && <td contentEditable suppressContentEditableWarning rowSpan={Math.max(1, orderedSaudaSale.length)} className="font-extrabold border border-slate-500 p-2 align-top uppercase bg-slate-50/70 text-slate-900 tracking-wide">SALE</td>}
-                <td contentEditable suppressContentEditableWarning className="font-semibold border border-slate-500 p-2 uppercase relative text-slate-800">
+                {idx === 0 && <td contentEditable suppressContentEditableWarning rowSpan={Math.max(1, orderedSaudaSale.length)} className="font-black border border-slate-500 p-2 align-top uppercase bg-slate-50/70 text-slate-950 tracking-wide">SALE</td>}
+                <td contentEditable suppressContentEditableWarning className="font-bold border border-slate-500 p-2 uppercase relative text-slate-900">
                   <HideButton rowKey={`sale-${item.itemName || idx}`} />
                   {item.itemName}
                 </td>
-                <td contentEditable suppressContentEditableWarning className="font-bold border border-slate-500 p-2 text-right font-mono text-slate-900">{formatNumber(item.balPending)}</td>
+                <td contentEditable suppressContentEditableWarning className="font-extrabold border border-slate-500 p-2 text-right font-mono text-slate-950 text-sm">{formatNumber(item.balPending)}</td>
               </tr>
             ))}
             {filteredSaudaSale.length === 0 && (
@@ -789,18 +890,18 @@ const MisReport = () => {
               </td>
             </tr>
             <tr className="bg-slate-100">
-              <th contentEditable suppressContentEditableWarning className="text-slate-700 font-extrabold text-center p-1.5 border border-slate-500 uppercase tracking-wide w-[140px]">TYPE</th>
-              <th contentEditable suppressContentEditableWarning className="text-slate-700 font-extrabold text-center p-1.5 border border-slate-500 uppercase tracking-wide">ITEM'S</th>
-              <th contentEditable suppressContentEditableWarning className="text-slate-700 font-extrabold text-center p-1.5 border border-slate-500 uppercase tracking-wide w-[180px]">BAL. PENDING</th>
+              <th contentEditable suppressContentEditableWarning className="text-slate-900 font-extrabold text-center p-1.5 border border-slate-500 uppercase tracking-wide w-[140px]">TYPE</th>
+              <th contentEditable suppressContentEditableWarning className="text-slate-900 font-extrabold text-center p-1.5 border border-slate-500 uppercase tracking-wide">ITEM'S</th>
+              <th contentEditable suppressContentEditableWarning className="text-slate-900 font-extrabold text-center p-1.5 border border-slate-500 uppercase tracking-wide w-[180px]">BAL. PENDING</th>
             </tr>
             {orderedSaudaPurchase.map((item, idx) => (
               <tr key={`pur-${item.itemName || idx}`} className="group cursor-move hover:bg-indigo-50/40 transition-colors" draggable onDragStart={(e) => handleDragStart(e, idx, 'saudaPurchase')} onDragOver={handleDragOver} onDrop={(e) => handleDrop(e, idx, 'saudaPurchase', orderedSaudaPurchase, setOrderedSaudaPurchase)}>
-                {idx === 0 && <td contentEditable suppressContentEditableWarning rowSpan={Math.max(1, orderedSaudaPurchase.length)} className="font-extrabold border border-slate-500 p-2 align-top uppercase bg-slate-50/70 text-slate-900 tracking-wide">PURCHASE</td>}
-                <td contentEditable suppressContentEditableWarning className="font-semibold border border-slate-500 p-2 uppercase relative text-slate-800">
+                {idx === 0 && <td contentEditable suppressContentEditableWarning rowSpan={Math.max(1, orderedSaudaPurchase.length)} className="font-black border border-slate-500 p-2 align-top uppercase bg-slate-50/70 text-slate-950 tracking-wide">PURCHASE</td>}
+                <td contentEditable suppressContentEditableWarning className="font-bold border border-slate-500 p-2 uppercase relative text-slate-900">
                   <HideButton rowKey={`pur-${item.itemName || idx}`} />
                   {item.itemName}
                 </td>
-                <td contentEditable suppressContentEditableWarning className="font-bold border border-slate-500 p-2 text-right font-mono text-slate-900">{formatNumber(item.balPending)}</td>
+                <td contentEditable suppressContentEditableWarning className="font-extrabold border border-slate-500 p-2 text-right font-mono text-slate-950 text-sm">{formatNumber(item.balPending)}</td>
               </tr>
             ))}
             {filteredSaudaPurchase.length === 0 && (
@@ -813,10 +914,10 @@ const MisReport = () => {
 
             {/* NOTES SECTION */}
             <tr>
-              <td contentEditable suppressContentEditableWarning className="bg-slate-100 text-slate-800 font-extrabold p-2 border border-slate-500 uppercase tracking-wider align-top w-[140px]">
+              <td contentEditable suppressContentEditableWarning className="bg-slate-100 text-slate-900 font-black p-2 border border-slate-500 uppercase tracking-wider align-top w-[140px]">
                 NOTES:
               </td>
-              <td contentEditable suppressContentEditableWarning colSpan="2" className="border border-slate-500 p-3 text-slate-800 font-medium text-sm min-h-[70px] align-top outline-none focus:bg-slate-50/80 transition-colors break-words whitespace-pre-wrap" placeholder="Click here to type additional management notes...">
+              <td contentEditable suppressContentEditableWarning colSpan="2" className="print-notes-cell border border-slate-500 p-3 text-slate-900 font-bold text-sm min-h-[70px] align-top outline-none focus:bg-slate-50/80 transition-colors break-words whitespace-pre-wrap" placeholder="Click here to type additional management notes...">
               </td>
             </tr>
 
